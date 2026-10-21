@@ -330,6 +330,12 @@ grant execute on function public.confirmar_proposta(uuid) to authenticated;
 grant execute on function public.definir_chave_robo(text) to authenticated;
 grant execute on function public.tocar_atualizado() to authenticated;
 
+-- ---------- Atualização ao vivo no sistema ----------
+do $$ begin
+  alter publication supabase_realtime add table public.pedidos, public.reunioes;
+exception when duplicate_object or undefined_object then null;
+end $$;
+
 -- ---------- Logos enviadas pelo formulário ----------
 -- Pasta pública de leitura (logo é material público da marca), com nome aleatório.
 -- Visitantes só podem ENVIAR imagens de até 5 MB; não listam, não trocam, não apagam.
