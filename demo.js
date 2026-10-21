@@ -1,0 +1,84 @@
+// Modo demonstração (portfólio): dados de exemplo só na memória do navegador. Nada é salvo.
+(function () {
+  'use strict';
+  if (!/[?&]demo\b/.test(location.search) && !window.DERS_FORCAR_DEMO) return;
+
+  var H = 3600e3, agora = Date.now();
+  function slotEm(dias, horaLocal) {
+    // horário de São Paulo (UTC-3) em "dias" a partir de hoje
+    var d = new Date(agora + dias * 864e5);
+    var y = d.getUTCFullYear(), m = d.getUTCMonth(), dd = d.getUTCDate();
+    return new Date(Date.UTC(y, m, dd, horaLocal + 3, 0, 0)).toISOString();
+  }
+  function id() { return 'demo-' + Math.random().toString(36).slice(2, 10); }
+  function reuniao(inicio, status, por) { return { id: id(), inicio: inicio, fim: new Date(new Date(inicio).getTime() + H).toISOString(), status: status, criado_por: por || 'cliente', token: id(), criado_em: new Date(agora - 2 * H).toISOString() }; }
+  function pedido(o) {
+    return Object.assign({ id: id(), codigo: 'D' + String(Math.random()).slice(2, 8) + '-DEMO', criado_em: new Date(agora - (o.horas || 1) * H).toISOString(), status: 'novo', email: '', respostas: {}, reunioes: [], logo_path: null }, o);
+  }
+
+  var amanha10 = slotEm(1, 10), amanha15 = slotEm(1, 15), depois11 = slotEm(2, 11);
+  var dados = [
+    pedido({ empresa: 'Doce Encanto Confeitaria', nome: 'Mariana Alves', whatsapp: '11900000001', segmento: 'Alimentação', tipo_site: 'Site com Catálogo', status: 'novo', horas: 1,
+      respostas: { origem: 'Instagram', cidade: 'São Paulo', tempo: '3 a 10 anos', objetivo: 'Receber pedidos pelo WhatsApp', oQueVende: 'Bolos de festa, doces finos e kits de presente', prazo: 'Neste mês', funcionalidades: ['Catálogo de produtos', 'Galeria de fotos'] },
+      reunioes: [reuniao(amanha10, 'pendente')] }),
+    pedido({ empresa: 'Studio Bella Forma', nome: 'Carla Souza', whatsapp: '11900000002', segmento: 'Beleza e estética', tipo_site: 'Site para Empresa', status: 'novo', horas: 3,
+      respostas: { origem: 'Indicação', cidade: 'Guarulhos', objetivo: 'Agendamento de horários', oQueVende: 'Estética facial e corporal', prazo: 'O quanto antes', funcionalidades: ['Agendamento'] },
+      reunioes: [reuniao(amanha15, 'pendente')] }),
+    pedido({ empresa: 'Pet Amigo Banho e Tosa', nome: 'Rafael Lima', whatsapp: '11900000003', segmento: 'Pet', tipo_site: 'Site para Empresa', status: 'reuniao_ok', horas: 20,
+      respostas: { origem: 'Google', cidade: 'Osasco', objetivo: 'Agendamento de horários', oQueVende: 'Banho, tosa e táxi pet' },
+      reunioes: [reuniao(amanha15, 'aprovada')] }),
+    pedido({ empresa: 'Oficina Turbo Car', nome: 'Diego Martins', whatsapp: '11900000004', segmento: 'Automotivo', tipo_site: 'Página de Divulgação', status: 'para_revisar', horas: 26, repositorio: 'turbo-car',
+      link_prototipo: 'https://detalhe-perfeito.vercel.app/', link_video: '', notas: 'Telefone e endereço são de exemplo.',
+      respostas: { origem: 'WhatsApp', cidade: 'Santo André', objetivo: 'Divulgar uma promoção', oQueVende: 'Revisão completa e troca de óleo' },
+      reunioes: [reuniao(depois11, 'aprovada')] }),
+    pedido({ empresa: 'Festa Mágica Brinquedos', nome: 'Juliana Rocha', whatsapp: '11900000005', segmento: 'Festas e eventos', tipo_site: 'Site com Catálogo', status: 'enviado', horas: 50, repositorio: 'festa-magica',
+      link_prototipo: 'https://sonhar-e-brincar.vercel.app/', respostas: { origem: 'Instagram', cidade: 'São Paulo', oQueVende: 'Aluguel de brinquedos para festas' },
+      reunioes: [reuniao(slotEm(0, 20), 'aprovada')] })
+  ];
+  var hist = {};
+  dados.forEach(function (p) { hist[p.id] = [{ quando: p.criado_em, evento: 'Pedido recebido pelo formulário' }]; });
+
+  function copia(x) { return JSON.parse(JSON.stringify(x)); }
+  function resolve(x) { return new Promise(function (r) { setTimeout(function () { r(copia(x)); }, 180); }); }
+  function acha(pid) { return dados.filter(function (p) { return p.id === pid; })[0]; }
+  function reg(pid, evento, detalhe) { (hist[pid] = hist[pid] || []).push({ quando: new Date().toISOString(), evento: evento, detalhe: detalhe || null }); }
+  var logado = false;
+
+  window.DERS_DEMO_API = {
+    sessao: function () { return resolve(logado ? {} : null); },
+    entrar: function (u, s) { if (u.trim().toLowerCase() === 'demo' && s === 'demo') { logado = true; return resolve(true); } return Promise.reject(new Error('Invalid login')); },
+    sair: function () { logado = false; return resolve(true); },
+    trocarSenha: function () { return resolve(true); },
+    ehAdmin: function () { return resolve(logado); },
+    pedidos: function () { return resolve(dados); },
+    historico: function (pid) { return resolve((hist[pid] || []).slice().reverse()); },
+    atualizar: function (pid, campos) { Object.assign(acha(pid), campos); if (campos.status === 'em_criacao') setTimeout(function () { var p = acha(pid); if (p.status === 'em_criacao') { p.status = 'para_revisar'; p.link_prototipo = 'https://detalhe-perfeito.vercel.app/'; reg(pid, 'Site e vídeo prontos para revisar'); } }, 6000); return resolve(true); },
+    registrar: function (pid, e, d) { reg(pid, e, d); return resolve(true); },
+    cancelarReunioes: function (pid) { acha(pid).reunioes.forEach(function (r) { if (r.status === 'pendente' || r.status === 'proposta') r.status = 'cancelada'; }); return resolve(true); },
+    aprovarReuniao: function (rid) {
+      var alvo, dono;
+      dados.forEach(function (p) { p.reunioes.forEach(function (r) { if (r.id === rid) { alvo = r; dono = p; } }); });
+      var ocupado = dados.some(function (p) { return p.reunioes.some(function (r) { return r.status === 'aprovada' && r.inicio === alvo.inicio; }); });
+      if (ocupado) return Promise.reject(new Error('reunioes_um_aprovado'));
+      alvo.status = 'aprovada'; dono.reunioes.forEach(function (r) { if (r !== alvo && (r.status === 'pendente' || r.status === 'proposta')) r.status = 'cancelada'; });
+      if (['novo', 'remarcar', 'aguardando_cliente'].indexOf(dono.status) >= 0) dono.status = 'reuniao_ok';
+      reg(dono.id, 'Horário da reunião aprovado'); return resolve(true);
+    },
+    proporHorario: function (pid, inicio) {
+      var p = acha(pid);
+      p.reunioes.forEach(function (r) { if (r.status === 'pendente' || r.status === 'proposta') r.status = 'cancelada'; });
+      var r = reuniao(new Date(inicio).toISOString(), 'proposta', 'ders'); p.reunioes.push(r); p.status = 'aguardando_cliente';
+      reg(pid, 'Novo horário proposto ao cliente'); return resolve(r.token);
+    },
+    confirmarProposta: function (pid) { var p = acha(pid); var r = p.reunioes.filter(function (x) { return x.status === 'proposta'; })[0]; return r ? this.aprovarReuniao(r.id) : Promise.reject(new Error('sem_proposta')); },
+    slots: function () {
+      var out = [], semana = { 0: [10, 17], 1: [8, 22], 2: [8, 22], 3: [8, 22], 4: [8, 22], 5: [8, 22], 6: [10, 17] };
+      for (var i = 0; i <= 14; i++) {
+        var base = new Date(agora - 3 * H + i * 864e5), dow = base.getUTCDay(), f = semana[dow];
+        for (var h = f[0]; h + 1 <= f[1]; h++) { var s = slotEm(i, h); if (new Date(s).getTime() >= Date.now() + 2 * H) out.push(s); }
+      }
+      return resolve(out);
+    },
+    logoUrl: function () { return ''; }
+  };
+})();

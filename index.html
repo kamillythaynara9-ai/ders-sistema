@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DERS · Sistema</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#5E4A92">
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="favicon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400..700&family=Syne:wght@600..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="fundo" aria-hidden="true"><span class="bolha b1"></span><span class="bolha b2"></span><span class="bolha b3"></span></div>
+
+<!-- Entrada -->
+<main class="tela entrada" id="entrada" hidden>
+  <div class="entrada-caixa">
+    <img class="entrada-logo" src="logo.png" alt="DERS" width="886" height="240">
+    <h1>Sistema <em>DERS</em></h1>
+    <p class="lead" id="entrada-lead">Pedidos, reuniões e entregas num lugar só.</p>
+    <div class="demo-aviso" id="demo-aviso" hidden>
+      <b>Demonstração</b> · use o usuário <code>demo</code> e a senha <code>demo</code>. Nada do que você fizer aqui é salvo.
+    </div>
+    <form id="form-entrada" autocomplete="on">
+      <label class="campo"><span>Usuário</span><input id="usuario" name="username" autocomplete="username" required autocapitalize="characters" spellcheck="false"></label>
+      <label class="campo"><span>Senha</span>
+        <span class="senha-linha"><input id="senha" name="password" type="password" autocomplete="current-password" required><button type="button" class="ver-senha" id="ver-senha" aria-label="Mostrar senha">ver</button></span>
+      </label>
+      <p class="erro-msg" id="entrada-erro" role="alert"></p>
+      <button class="btn principal largo" type="submit" id="entrar">Entrar</button>
+    </form>
+  </div>
+</main>
+
+<!-- Aplicativo -->
+<div class="tela app" id="app" hidden>
+  <header class="topo">
+    <img class="topo-logo" src="logo.png" alt="DERS" width="886" height="240">
+    <span class="selo-demo" id="selo-demo" hidden>demonstração</span>
+    <button class="icone" id="btn-menu" type="button" aria-label="Menu">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+    </button>
+  </header>
+
+  <nav class="abas" role="tablist">
+    <button class="aba ativa" data-aba="pedidos" role="tab">Pedidos <span class="contador" id="cont-agir" hidden></span></button>
+    <button class="aba" data-aba="agenda" role="tab">Agenda</button>
+  </nav>
+
+  <section class="vista ativa" id="vista-pedidos">
+    <div class="filtros" id="filtros">
+      <button class="chip ativo" data-filtro="agir">Para agir</button>
+      <button class="chip" data-filtro="andamento">Em andamento</button>
+      <button class="chip" data-filtro="encerrados">Encerrados</button>
+      <button class="chip" data-filtro="todos">Todos</button>
+    </div>
+    <label class="busca"><input id="busca" type="search" placeholder="Buscar empresa, nome ou código" aria-label="Buscar"></label>
+    <ul class="lista" id="lista"></ul>
+  </section>
+
+  <section class="vista" id="vista-agenda">
+    <p class="lead pequeno">Próximos 14 dias. Seg a sex das 8h às 22h, sáb e dom das 10h às 17h.</p>
+    <div id="agenda"></div>
+  </section>
+</div>
+
+<!-- Detalhe do pedido -->
+<div class="folha" id="detalhe" role="dialog" aria-modal="true" aria-labelledby="det-empresa" hidden>
+  <div class="folha-fundo" data-fechar></div>
+  <article class="folha-caixa">
+    <header class="det-topo">
+      <button class="icone" type="button" data-fechar aria-label="Fechar">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      </button>
+      <div>
+        <h2 id="det-empresa"></h2>
+        <p class="det-sub" id="det-sub"></p>
+      </div>
+    </header>
+    <div class="det-corpo" id="det-corpo"></div>
+  </article>
+</div>
+
+<!-- Menu -->
+<div class="folha menu" id="menu" hidden>
+  <div class="folha-fundo" data-fechar></div>
+  <div class="folha-caixa">
+    <h3>Conta</h3>
+    <form id="form-senha" class="bloco">
+      <label class="campo"><span>Nova senha</span><input id="nova-senha" type="password" autocomplete="new-password" minlength="8" required></label>
+      <button class="btn secundario" type="submit">Trocar senha</button>
+      <p class="miudo" id="senha-msg" role="status"></p>
+    </form>
+    <button class="btn fantasma largo" id="sair" type="button">Sair</button>
+  </div>
+</div>
+
+<div class="aviso" id="aviso" role="status" aria-live="polite"></div>
+
+<script src="supabase-2.45.4.min.js"></script>
+<script src="config.js"></script>
+<script src="demo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
