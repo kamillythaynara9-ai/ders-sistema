@@ -151,6 +151,12 @@
     $('#lista').innerHTML = '<li class="carregando"><span></span></li>';
     carregar();
     if (!assinado && api.assinar) { assinado = true; api.assinar(function () { clearTimeout(iniciarApp.t); iniciarApp.t = setTimeout(carregar, 400); }); }
+    // No celular a conexão ao vivo pausa com a tela bloqueada: ao voltar para o sistema, busca tudo de novo.
+    if (!iniciarApp.volta) {
+      iniciarApp.volta = true;
+      document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && !$('#app').hidden) carregar(); });
+      setInterval(function () { if (document.visibilityState === 'visible' && !$('#app').hidden) carregar(); }, 60000);
+    }
   }
   function carregar() {
     // Se a tabela de bloqueios ainda não existe no banco, o resto continua funcionando.
