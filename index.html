@@ -64,7 +64,16 @@
   </section>
 
   <section class="vista" id="vista-agenda">
-    <p class="lead pequeno">Próximos 14 dias. Seg a sex das 8h às 22h, sáb e dom das 10h às 17h.</p>
+    <div class="agenda-topo">
+      <p class="lead pequeno">Marque quando você não pode atender. Esses horários somem do formulário na hora.</p>
+      <button class="btn principal pequeno" type="button" id="novo-bloqueio">+ Marcar indisponível</button>
+    </div>
+    <p class="info-caixa" id="agenda-aviso" hidden>Para marcar indisponibilidade, cole o arquivo <b>atualizacao-agenda.sql</b> no Supabase (SQL Editor &gt; Run). As reuniões continuam aparecendo normalmente.</p>
+    <div class="agenda-grade">
+      <div class="bloco cal" id="cal"></div>
+      <div class="bloco dia-painel" id="dia-painel" aria-live="polite"></div>
+    </div>
+    <h3 class="sub-agenda">Próximas reuniões</h3>
     <div id="agenda"></div>
   </section>
 </div>
@@ -98,6 +107,12 @@
     </form>
     <button class="btn fantasma largo" id="sair" type="button">Sair</button>
   </div>
+</div>
+
+<!-- Marcar ou apagar bloqueio da agenda -->
+<div class="folha menu" id="folha-bloqueio" role="dialog" aria-modal="true" aria-labelledby="fb-titulo" hidden>
+  <div class="folha-fundo" data-fechar></div>
+  <div class="folha-caixa" id="fb-caixa"></div>
 </div>
 
 <div class="aviso" id="aviso" role="status" aria-live="polite"></div>

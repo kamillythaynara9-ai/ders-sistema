@@ -87,6 +87,19 @@ create table if not exists public.historico (
 );
 create index if not exists historico_pedido on public.historico (pedido_id, quando desc);
 
+-- Agenda da Thaynara: períodos em que ela não pode atender (some do formulário).
+-- "serie" junta os bloqueios criados juntos com "repetir toda semana".
+create table if not exists public.bloqueios (
+  id uuid primary key default gen_random_uuid(),
+  inicio timestamptz not null,
+  fim timestamptz not null check (fim > inicio),
+  titulo text not null default 'Indisponível',
+  tipo text not null default 'indisponivel' check (tipo in ('indisponivel','compromisso')),
+  serie uuid,
+  criado_em timestamptz not null default now()
+);
+create index if not exists bloqueios_periodo on public.bloqueios (inicio, fim);
+
 create or replace function public.tocar_atualizado() returns trigger language plpgsql as $$
 begin new.atualizado_em := now(); return new; end $$;
 drop trigger if exists pedidos_atualizado on public.pedidos;
@@ -104,24 +117,28 @@ alter table public.admins   enable row level security;
 alter table public.pedidos  enable row level security;
 alter table public.reunioes enable row level security;
 alter table public.historico enable row level security;
+alter table public.bloqueios enable row level security;
 
 drop policy if exists admin_tudo on public.config;
 drop policy if exists admin_tudo on public.pedidos;
 drop policy if exists admin_tudo on public.reunioes;
 drop policy if exists admin_tudo on public.historico;
+drop policy if exists admin_tudo on public.bloqueios;
 drop policy if exists admin_ler on public.admins;
 create policy admin_tudo on public.config    for all to authenticated using (public.e_admin()) with check (public.e_admin());
 create policy admin_tudo on public.pedidos   for all to authenticated using (public.e_admin()) with check (public.e_admin());
 create policy admin_tudo on public.reunioes  for all to authenticated using (public.e_admin()) with check (public.e_admin());
 create policy admin_tudo on public.historico for all to authenticated using (public.e_admin()) with check (public.e_admin());
+create policy admin_tudo on public.bloqueios for all to authenticated using (public.e_admin()) with check (public.e_admin());
 create policy admin_ler  on public.admins    for select to authenticated using (public.e_admin());
 
 -- Visitantes (anon) não leem nem gravam tabelas: só usam as funções abaixo.
-revoke all on public.config, public.admins, public.pedidos, public.reunioes, public.historico from anon;
+revoke all on public.config, public.admins, public.pedidos, public.reunioes, public.historico, public.bloqueios from anon;
 revoke all on sequence public.historico_id_seq from anon;
 
 -- ---------- Agenda ----------
--- Todos os horários de início dentro do expediente, a partir de agora + antecedência.
+-- Todos os horários de início dentro do expediente, a partir de agora + antecedência,
+-- tirando os que batem com um bloqueio da agenda.
 create or replace function public.agenda_slots() returns setof timestamptz
 language plpgsql stable security definer set search_path = public, extensions as $$
 declare
@@ -139,7 +156,9 @@ begin
     h := (faixa ->> 0)::int;
     while h * 60 + dur <= (faixa ->> 1)::int * 60 loop
       t := (d + make_time(h, 0, 0)) at time zone fuso;
-      if t >= minimo then return next t; end if;
+      if t >= minimo and not exists (
+        select 1 from public.bloqueios b where b.inicio < t + make_interval(mins => dur) and b.fim > t
+      ) then return next t; end if;
       h := h + 1;
     end loop;
   end loop;
@@ -258,6 +277,7 @@ declare cfg jsonb := (select valor from public.config where chave = 'agenda'); v
 begin
   if not public.e_admin() then raise exception 'sem_permissao'; end if;
   if exists (select 1 from public.reunioes where inicio = p_inicio and status in ('aprovada','proposta')) then raise exception 'horario_ocupado'; end if;
+  if exists (select 1 from public.bloqueios b where b.inicio < p_inicio + make_interval(mins => (cfg ->> 'duracao_min')::int) and b.fim > p_inicio) then raise exception 'horario_bloqueado'; end if;
   update public.reunioes set status = 'cancelada' where pedido_id = p_pedido and status in ('pendente','proposta');
   insert into public.reunioes (pedido_id, inicio, fim, status, criado_por)
   values (p_pedido, p_inicio, p_inicio + make_interval(mins => (cfg ->> 'duracao_min')::int), 'proposta', 'ders')
@@ -333,6 +353,10 @@ grant execute on function public.tocar_atualizado() to authenticated;
 -- ---------- Atualização ao vivo no sistema ----------
 do $$ begin
   alter publication supabase_realtime add table public.pedidos, public.reunioes;
+exception when duplicate_object or undefined_object then null;
+end $$;
+do $$ begin
+  alter publication supabase_realtime add table public.bloqueios;
 exception when duplicate_object or undefined_object then null;
 end $$;
 

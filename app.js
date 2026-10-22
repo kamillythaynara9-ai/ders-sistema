@@ -41,7 +41,7 @@
   function abrirWhats(numero, texto) { window.open('https://wa.me/' + fone(numero) + '?text=' + encodeURIComponent(texto), '_blank', 'noopener'); }
   function erroAmigavel(e) {
     var m = (e && (e.message || e.error_description || e.msg)) || String(e);
-    var mapa = { horario_ocupado: 'Esse horário já está ocupado. Escolha outro.', sem_permissao: 'Sem permissão. Entre de novo.', sem_proposta: 'Não há proposta aberta para este pedido.' };
+    var mapa = { horario_ocupado: 'Esse horário já está ocupado. Escolha outro.', sem_permissao: 'Sem permissão. Entre de novo.', sem_proposta: 'Não há proposta aberta para este pedido.', horario_bloqueado: 'Esse horário está marcado como indisponível na sua agenda.' };
     for (var k in mapa) if (m.indexOf(k) >= 0) return mapa[k];
     if (/duplicate key|reunioes_um_aprovado/.test(m)) return 'Já existe uma reunião aprovada nesse horário.';
     if (/Invalid login/i.test(m)) return 'Usuário ou senha incorretos.';
@@ -88,16 +88,21 @@
       proporHorario: function (id, inicio) { return sb.rpc('propor_horario', { p_pedido: id, p_inicio: inicio }).then(ok); },
       confirmarProposta: function (id) { return sb.rpc('confirmar_proposta', { p_pedido: id }).then(ok); },
       slots: function () { return sb.rpc('agenda_slots').then(ok); },
+      bloqueios: function () { return sb.from('bloqueios').select('*').gte('fim', new Date(Date.now() - 62 * 864e5).toISOString()).order('inicio').limit(2000).then(ok); },
+      criarBloqueios: function (lista) { return sb.from('bloqueios').insert(lista).then(ok); },
+      apagarBloqueio: function (id) { return sb.from('bloqueios').delete().eq('id', id).then(ok); },
+      apagarSerie: function (serie, desde) { return sb.from('bloqueios').delete().eq('serie', serie).gte('inicio', desde).then(ok); },
       logoUrl: function (path) { return path ? sb.storage.from('logos').getPublicUrl(path).data.publicUrl : ''; },
       assinar: function (cb) {
         sb.channel('mudancas').on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, cb)
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'reunioes' }, cb).subscribe();
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'reunioes' }, cb)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'bloqueios' }, cb).subscribe();
       }
     };
   }
 
   /* ---------- Estado ---------- */
-  var estado = { pedidos: [], filtro: 'agir', busca: '', aberto: null, slots: null };
+  var estado = { pedidos: [], bloqueios: [], filtro: 'agir', busca: '', aberto: null, slots: null };
 
   function reuniaoAtual(p) {
     var rs = (p.reunioes || []).filter(function (r) { return r.status !== 'cancelada'; });
@@ -148,7 +153,10 @@
     if (!assinado && api.assinar) { assinado = true; api.assinar(function () { clearTimeout(iniciarApp.t); iniciarApp.t = setTimeout(carregar, 400); }); }
   }
   function carregar() {
-    return api.pedidos().then(function (ps) {
+    // Se a tabela de bloqueios ainda não existe no banco, o resto continua funcionando.
+    var bl = api.bloqueios().then(function (x) { estado.semAgenda = false; return x || []; }, function () { estado.semAgenda = true; return []; });
+    return Promise.all([api.pedidos(), bl]).then(function (res) {
+      var ps = res[0]; estado.bloqueios = res[1];
       estado.pedidos = ps || [];
       desenharLista(); desenharAgenda();
       if (estado.aberto) { var p = acharPedido(estado.aberto); if (p) desenharDetalhe(p); }
@@ -190,6 +198,7 @@
         var pre = r.status === 'aprovada' ? 'Reunião ' : r.status === 'proposta' ? 'Proposto ' : r.status === 'recusada' ? 'Cliente pediu outro horário · ' : 'Pediu ';
         tags += '<span class="etiqueta ' + cls + '">' + pre + esc(diaHora(r.inicio)) + '</span>';
         if (conf) tags += '<span class="etiqueta alerta">Conflito</span>';
+        else if (r.status !== 'recusada' && bloqueioDa(r)) tags += '<span class="etiqueta alerta">Na sua indisponibilidade</span>';
       }
       if (p.tipo_site) tags += '<span class="etiqueta">' + esc(p.tipo_site) + '</span>';
       return '<li class="item st-' + p.status + '" data-id="' + p.id + '" style="animation-delay:' + Math.min(i * 40, 400) + 'ms" tabindex="0">' +
@@ -202,28 +211,221 @@
   $('#lista').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var li = e.target.closest('.item'); if (li) abrir(li.dataset.id); } });
 
   /* ---------- Agenda ---------- */
-  function desenharAgenda() {
-    var agora = Date.now(), limite = agora + 14 * 864e5, itens = [];
+  // São Paulo não tem horário de verão desde 2019: o fuso é sempre -03:00.
+  var OFFSET = CFG.offset || '-03:00';
+  // Expediente (0 = domingo): o mesmo de config "agenda" no banco.
+  var SEMANA = CFG.semana || { 0: [10, 17], 1: [8, 22], 2: [8, 22], 3: [8, 22], 4: [8, 22], 5: [8, 22], 6: [10, 17] };
+  function isoDia(d) { return new Intl.DateTimeFormat('en-CA', { timeZone: FUSO, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(d)); }
+  function somaDias(iso, n) { var q = iso.split('-'); return new Date(Date.UTC(+q[0], q[1] - 1, +q[2] + n)).toISOString().slice(0, 10); }
+  function diaSemana(iso) { return new Date(iso + 'T12:00:00Z').getUTCDay(); }
+  function momento(iso, hm) { return new Date(iso + 'T' + (hm || '00:00') + ':00' + OFFSET); }
+  function hh(h) { return (h < 10 ? '0' : '') + h + ':00'; }
+  function cap(t) { return t.charAt(0).toUpperCase() + t.slice(1); }
+  function sobrepoe(a0, a1, b0, b1) { return a0 < b1 && a1 > b0; }
+  function bloqueiosEntre(t0, t1) { return estado.bloqueios.filter(function (b) { return sobrepoe(+new Date(b.inicio), +new Date(b.fim), t0, t1); }); }
+  function bloqueioDa(r) { var t = +new Date(r.inicio); return bloqueiosEntre(t, r.fim ? +new Date(r.fim) : t + 3600e3)[0] || null; }
+  function reunioesAtivas() {
+    var out = [];
     estado.pedidos.forEach(function (p) {
       (p.reunioes || []).forEach(function (r) {
-        var t = new Date(r.inicio).getTime();
-        if (t >= agora - 3600e3 && t <= limite && ['aprovada', 'pendente', 'proposta'].indexOf(r.status) >= 0) itens.push({ p: p, r: r, t: t });
+        if (['aprovada', 'pendente', 'proposta'].indexOf(r.status) >= 0) { var t0 = +new Date(r.inicio); out.push({ p: p, r: r, t0: t0, t1: r.fim ? +new Date(r.fim) : t0 + 3600e3 }); }
       });
     });
-    if (!itens.length) { $('#agenda').innerHTML = '<div class="vazio"><b>Agenda livre</b>Nenhuma reunião pedida para os próximos dias.</div>'; return; }
-    itens.sort(function (a, b) { return a.t - b.t; });
-    var aprovados = {}; itens.forEach(function (x) { if (x.r.status === 'aprovada') aprovados[x.t] = true; });
+    return out;
+  }
+  function periodo(b) {
+    var a = new Date(b.inicio), z = new Date(b.fim);
+    if (hora(a) === '00:00' && hora(z) === '00:00') {
+      var ult = somaDias(isoDia(z), -1);
+      return isoDia(a) === ult ? cap(diaExtenso(a)) + ', dia inteiro' : cap(diaExtenso(a)) + ' até ' + diaExtenso(momento(ult, '12:00')) + ', dias inteiros';
+    }
+    if (isoDia(a) === isoDia(z)) return cap(diaExtenso(a)) + ', das ' + hora(a) + ' às ' + hora(z);
+    return cap(diaHora(a)) + ' até ' + diaHora(z);
+  }
+  // Dia "fechado" = todas as horas do expediente estão bloqueadas.
+  function diaFechado(d) {
+    var f = SEMANA[diaSemana(d)]; if (!f) return false;
+    for (var h = f[0]; h < f[1]; h++) { var s = +momento(d, hh(h)); if (!bloqueiosEntre(s, s + 3600e3).length) return false; }
+    return true;
+  }
+
+  function desenharAgenda() {
+    var hoje = isoDia(Date.now());
+    if (!estado.mes) { estado.mes = hoje.slice(0, 7); estado.diaAg = hoje; }
+    $('#agenda-aviso').hidden = !estado.semAgenda;
+    $('#novo-bloqueio').disabled = !!estado.semAgenda;
+    desenharCalendario(hoje); desenharDia(); desenharProximas();
+  }
+
+  function desenharCalendario(hoje) {
+    var m = estado.mes, primeiro = m + '-01', ini = somaDias(primeiro, -diaSemana(primeiro)), ativas = reunioesAtivas();
+    var seta = function (d) { return '<svg viewBox="0 0 24 24" width="20" height="20"><path d="' + d + '" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'; };
+    var h = '<div class="cal-cab"><button class="icone" type="button" data-mes="-1" aria-label="Mês anterior"' + (m <= hoje.slice(0, 7) ? ' disabled' : '') + '>' + seta('M15 5l-7 7 7 7') + '</button>' +
+      '<h3>' + esc(fmt(momento(primeiro, '12:00'), { month: 'long', year: 'numeric' })) + '</h3>' +
+      '<button class="icone" type="button" data-mes="1" aria-label="Próximo mês">' + seta('M9 5l7 7-7 7') + '</button></div><div class="cal-grade">' +
+      ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map(function (x) { return '<span class="cal-sem" aria-hidden="true">' + x + '</span>'; }).join('');
+    for (var i = 0; i < 42; i++) {
+      var d = somaDias(ini, i);
+      if (i % 7 === 0 && i && d.slice(0, 7) > m) break;
+      var t0 = +momento(d), t1 = +momento(somaDias(d, 1));
+      var rs = ativas.filter(function (x) { return x.t0 >= t0 && x.t0 < t1; });
+      var fechado = diaFechado(d), temBloq = !fechado && bloqueiosEntre(t0, t1).length > 0;
+      var ok = rs.some(function (x) { return x.r.status === 'aprovada'; }), espera = rs.some(function (x) { return x.r.status !== 'aprovada'; });
+      var cls = 'cal-dia' + (d.slice(0, 7) !== m ? ' fora' : '') + (d < hoje ? ' passado' : '') + (d === hoje ? ' hoje' : '') + (d === estado.diaAg ? ' sel' : '') + (fechado ? ' fechado' : '') + (SEMANA[diaSemana(d)] ? '' : ' sem-expediente');
+      var rot = cap(diaExtenso(momento(d, '12:00'))) + (rs.length ? ', ' + rs.length + (rs.length > 1 ? ' reuniões' : ' reunião') : '') + (fechado ? ', indisponível' : temBloq ? ', com bloqueio' : '');
+      h += '<button type="button" class="' + cls + '" data-dia="' + d + '" aria-label="' + esc(rot) + '"' + (d === estado.diaAg ? ' aria-pressed="true"' : '') + '><b>' + (+d.slice(8)) + '</b><span class="pontos">' +
+        (ok ? '<i class="pt ok"></i>' : '') + (espera ? '<i class="pt espera"></i>' : '') + (temBloq ? '<i class="pt bloq"></i>' : '') + '</span></button>';
+    }
+    h += '</div><div class="cal-legenda"><span><i class="pt ok"></i>Reunião confirmada</span><span><i class="pt espera"></i>A aprovar</span><span><i class="pt bloq"></i>Bloqueio</span><span><i class="pt fechado"></i>Dia indisponível</span></div>';
+    $('#cal').innerHTML = h;
+  }
+
+  function desenharDia() {
+    var d = estado.diaAg, f = SEMANA[diaSemana(d)], ini = +momento(d), fim = +momento(somaDias(d, 1)), agora = Date.now(), itens = [];
+    estado.bloqueios.forEach(function (b) {
+      var b0 = +new Date(b.inicio), b1 = +new Date(b.fim);
+      if (sobrepoe(b0, b1, ini, fim)) itens.push({ tipo: 'bloq', t: Math.max(b0, ini), ordem: 0, b: b, b0: b0, b1: b1 });
+    });
+    reunioesAtivas().forEach(function (x) { if (x.t0 >= ini && x.t0 < fim) itens.push({ tipo: 'reun', t: x.t0, ordem: 1, x: x }); });
+    if (f) for (var h = f[0]; h < f[1]; h++) {
+      var s = +momento(d, hh(h)), e = s + 3600e3;
+      if (e <= agora) continue;
+      var ocupado = itens.some(function (i) { return i.tipo === 'bloq' ? sobrepoe(i.b0, i.b1, s, e) : i.tipo === 'reun' && i.x.t0 === s; });
+      if (!ocupado) itens.push({ tipo: 'livre', t: s, ordem: 2, h: h });
+    }
+    itens.sort(function (a, b) { return (a.t - b.t) || (a.ordem - b.ordem); });
+
+    var passado = fim <= agora;
+    var html = '<div class="dia-cab"><div><h3>' + esc(cap(diaExtenso(momento(d, '12:00')))) + '</h3><p class="miudo">' +
+      (f ? 'Atendimento das ' + f[0] + 'h às ' + f[1] + 'h' : 'Sem atendimento neste dia') + '</p></div>' +
+      (passado || !f || estado.semAgenda ? '' : '<button class="btn fantasma pequeno" type="button" data-bloquear-dia="' + d + '">Bloquear o dia</button>') + '</div>';
+    if (!itens.length) html += '<p class="miudo">' + (passado ? 'Nada marcado neste dia.' : 'Nenhum horário para mostrar.') + '</p>';
+    html += '<div class="linha-tempo">' + itens.map(function (i) {
+      if (i.tipo === 'bloq') {
+        var todo = i.b0 <= ini && i.b1 >= fim;
+        var faixa = todo ? 'Dia todo' : (i.b0 < ini ? '00:00' : hora(i.b0)) + '–' + (i.b1 >= fim ? '24:00' : hora(i.b1));
+        return '<div class="lt-item bloq' + (i.b.tipo === 'compromisso' ? ' compromisso' : '') + '"><time>' + faixa + '</time><div><b>' + esc(i.b.titulo) + '</b><small>' +
+          (i.b.tipo === 'compromisso' ? 'Compromisso' : 'Indisponível') + (i.b.serie ? ' · repete toda semana' : '') + '</small></div>' +
+          '<button class="icone mini" type="button" data-bloqueio="' + esc(i.b.id) + '" aria-label="Apagar ' + esc(i.b.titulo) + '"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>';
+      }
+      if (i.tipo === 'reun') {
+        var r = i.x.r, bq = bloqueiosEntre(i.x.t0, i.x.t1)[0];
+        var et = bq ? '<span class="etiqueta alerta">Bloqueado</span>' : r.status === 'aprovada' ? '<span class="etiqueta ok">Confirmada</span>' : r.status === 'proposta' ? '<span class="etiqueta espera">Proposta</span>' : '<span class="etiqueta espera">A aprovar</span>';
+        return '<div class="lt-item reun' + (bq ? ' conflito' : '') + '" data-id="' + i.x.p.id + '" tabindex="0"><time>' + hora(r.inicio) + '</time><div><b>' + esc(i.x.p.empresa) + '</b><small>' + esc(i.x.p.nome) + '</small></div>' + et + '</div>';
+      }
+      return '<div class="lt-item livre"><time>' + hh(i.h) + '</time><div><span>Livre</span></div>' +
+        (estado.semAgenda ? '' : '<button class="btn fantasma mini" type="button" data-bloquear-hora="' + i.h + '">Bloquear</button>') + '</div>';
+    }).join('') + '</div>';
+    $('#dia-painel').innerHTML = html;
+  }
+
+  function desenharProximas() {
+    var agora = Date.now(), limite = agora + 14 * 864e5;
+    var itens = reunioesAtivas().filter(function (x) { return x.t0 >= agora - 3600e3 && x.t0 <= limite; });
+    if (!itens.length) { $('#agenda').innerHTML = '<div class="vazio"><b>Sem reuniões</b>Nenhuma reunião pedida para os próximos 14 dias.</div>'; return; }
+    itens.sort(function (a, b) { return a.t0 - b.t0; });
+    var aprovados = {}; itens.forEach(function (x) { if (x.r.status === 'aprovada') aprovados[x.t0] = true; });
     var html = '', dia = '';
     itens.forEach(function (x) {
       var k = chaveDia(x.r.inicio);
       if (k !== dia) { if (dia) html += '</div>'; dia = k; html += '<div class="agenda-dia"><h3>' + esc(diaExtenso(x.r.inicio)) + '</h3>'; }
-      var conf = x.r.status === 'pendente' && aprovados[x.t];
-      var et = x.r.status === 'aprovada' ? '<span class="etiqueta ok">Confirmada</span>' : x.r.status === 'proposta' ? '<span class="etiqueta espera">Proposta</span>' : conf ? '<span class="etiqueta alerta">Conflito</span>' : '<span class="etiqueta espera">A aprovar</span>';
-      html += '<div class="agenda-item' + (conf ? ' conflito' : '') + '" data-id="' + x.p.id + '"><time>' + hora(x.r.inicio) + '</time><div><b>' + esc(x.p.empresa) + '</b><br><small>' + esc(x.p.nome) + '</small></div>' + et + '</div>';
+      var conf = x.r.status === 'pendente' && aprovados[x.t0], bq = bloqueiosEntre(x.t0, x.t1).length > 0;
+      var et = conf ? '<span class="etiqueta alerta">Conflito</span>' : bq ? '<span class="etiqueta alerta">Bate com bloqueio</span>' : x.r.status === 'aprovada' ? '<span class="etiqueta ok">Confirmada</span>' : x.r.status === 'proposta' ? '<span class="etiqueta espera">Proposta</span>' : '<span class="etiqueta espera">A aprovar</span>';
+      html += '<div class="agenda-item' + (conf || bq ? ' conflito' : '') + '" data-id="' + x.p.id + '" tabindex="0"><time>' + hora(x.r.inicio) + '</time><div><b>' + esc(x.p.empresa) + '</b><br><small>' + esc(x.p.nome) + '</small></div>' + et + '</div>';
     });
     $('#agenda').innerHTML = html + '</div>';
   }
-  $('#agenda').addEventListener('click', function (e) { var it = e.target.closest('.agenda-item'); if (it) abrir(it.dataset.id); });
+
+  $('#vista-agenda').addEventListener('click', function (e) {
+    var b = e.target.closest('button, .agenda-item, .lt-item.reun'); if (!b || b.disabled) return;
+    if (b.dataset.mes) {
+      var q = estado.mes.split('-'), n = new Date(Date.UTC(+q[0], q[1] - 1 + (+b.dataset.mes), 1)).toISOString().slice(0, 7);
+      estado.mes = n; var hoje = isoDia(Date.now());
+      estado.diaAg = n === hoje.slice(0, 7) ? hoje : n + '-01';
+      desenharAgenda(); return;
+    }
+    if (b.dataset.dia) { estado.diaAg = b.dataset.dia; if (b.dataset.dia.slice(0, 7) !== estado.mes) estado.mes = b.dataset.dia.slice(0, 7); desenharAgenda(); $('#dia-painel').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); return; }
+    if (b.id === 'novo-bloqueio') return abrirFormBloqueio({});
+    if (b.dataset.bloquearDia) return abrirFormBloqueio({ dia: b.dataset.bloquearDia, todo: true });
+    if (b.dataset.bloquearHora) return abrirFormBloqueio({ dia: estado.diaAg, h: +b.dataset.bloquearHora });
+    if (b.dataset.bloqueio) return abrirApagar(b.dataset.bloqueio);
+    if (b.dataset.id) abrir(b.dataset.id);
+  });
+  $('#vista-agenda').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var it = e.target.closest('[data-id]'); if (it) abrir(it.dataset.id); } });
+
+  /* ---------- Marcar e apagar bloqueios ---------- */
+  function novoId() { return window.crypto && crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); }); }
+  function abrirFolhaBloqueio(html) { $('#fb-caixa').onclick = null; $('#fb-caixa').innerHTML = html; $('#folha-bloqueio').hidden = false; document.body.style.overflow = 'hidden'; }
+
+  function abrirFormBloqueio(pre) {
+    var hoje = isoDia(Date.now()), d = pre.dia || estado.diaAg || hoje; if (d < hoje) d = hoje;
+    var de = pre.h != null ? hh(pre.h) : '12:00', ate = pre.h != null ? hh(pre.h + 1) : '13:00';
+    abrirFolhaBloqueio('<h3 id="fb-titulo">Marcar na agenda</h3><p class="miudo fb-sub">Nesse período ninguém consegue marcar reunião pelo formulário.</p>' +
+      '<form id="form-bloqueio" novalidate>' +
+      '<div class="filtros" role="radiogroup" aria-label="Tipo"><button type="button" class="chip ativo" role="radio" aria-checked="true" data-tipo="indisponivel">Indisponível</button><button type="button" class="chip" role="radio" aria-checked="false" data-tipo="compromisso">Compromisso</button></div>' +
+      '<label class="campo"><span>O que é (opcional)</span><input id="fb-nome" maxlength="80" placeholder="Ex.: dentista, viagem, aula"></label>' +
+      '<div class="duas"><label class="campo"><span>Começa no dia</span><input id="fb-dia" type="date" min="' + hoje + '" value="' + d + '"></label>' +
+      '<label class="campo"><span>Termina no dia</span><input id="fb-ate-dia" type="date" min="' + hoje + '" value="' + d + '"></label></div>' +
+      '<label class="chave-linha"><input type="checkbox" id="fb-todo"' + (pre.todo ? ' checked' : '') + '><span>Dia inteiro</span></label>' +
+      '<div class="duas" id="fb-horas"' + (pre.todo ? ' hidden' : '') + '><label class="campo"><span>Das</span><input id="fb-de" type="time" step="900" value="' + de + '"></label>' +
+      '<label class="campo"><span>Até</span><input id="fb-ate" type="time" step="900" value="' + ate + '"></label></div>' +
+      '<label class="campo"><span>Repetir</span><select id="fb-rep"><option value="0">Não repetir</option><option value="4">Toda semana, por 1 mês</option><option value="8">Toda semana, por 2 meses</option><option value="13">Toda semana, por 3 meses</option><option value="26">Toda semana, por 6 meses</option></select></label>' +
+      '<p class="erro-msg" id="fb-erro" role="alert"></p>' +
+      '<button class="btn principal largo" type="submit">Salvar na agenda</button>' +
+      '<button class="btn fantasma largo fb-voltar" type="button" data-fechar>Voltar</button></form>');
+    var dia = $('#fb-dia'), ateDia = $('#fb-ate-dia');
+    // O fim acompanha o começo, a não ser que ela tenha escolhido outro dia de fim.
+    var diaAntes = dia.value;
+    dia.addEventListener('change', function () { if (!ateDia.value || ateDia.value === diaAntes || ateDia.value < dia.value) ateDia.value = dia.value; ateDia.min = dia.value; diaAntes = dia.value; });
+    $('#fb-todo').addEventListener('change', function () { $('#fb-horas').hidden = this.checked; });
+    $('#form-bloqueio .filtros').addEventListener('click', function (e) {
+      var c = e.target.closest('.chip'); if (!c) return;
+      $$('.chip', this).forEach(function (x) { x.classList.toggle('ativo', x === c); x.setAttribute('aria-checked', x === c ? 'true' : 'false'); });
+    });
+    $('#form-bloqueio').addEventListener('submit', salvarBloqueio);
+    setTimeout(function () { $('#fb-nome').focus(); }, 250);
+  }
+
+  function salvarBloqueio(e) {
+    e.preventDefault();
+    var erro = function (t) { $('#fb-erro').textContent = t; };
+    var tipo = $('#form-bloqueio .chip.ativo').dataset.tipo, nome = $('#fb-nome').value.trim();
+    var d = $('#fb-dia').value, ad = $('#fb-ate-dia').value || d, todo = $('#fb-todo').checked;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !/^\d{4}-\d{2}-\d{2}$/.test(ad)) return erro('Escolha o dia.');
+    if (!todo && (!$('#fb-de').value || !$('#fb-ate').value)) return erro('Escolha os horários.');
+    var i0 = todo ? momento(d) : momento(d, $('#fb-de').value), i1 = todo ? momento(somaDias(ad, 1)) : momento(ad, $('#fb-ate').value);
+    if (!(i1 > i0)) return erro('O fim precisa ser depois do começo.');
+    if (i1 - i0 > 62 * 864e5) return erro('Período longo demais. Marque até 2 meses de cada vez.');
+    if (+i1 <= Date.now()) return erro('Esse horário já passou.');
+    var rep = +$('#fb-rep').value, serie = rep ? novoId() : null, lista = [];
+    for (var k = 0; k < Math.max(rep, 1); k++) {
+      lista.push({ inicio: new Date(+i0 + k * 7 * 864e5).toISOString(), fim: new Date(+i1 + k * 7 * 864e5).toISOString(),
+        titulo: nome || (tipo === 'compromisso' ? 'Compromisso' : 'Indisponível'), tipo: tipo, serie: serie });
+    }
+    var batem = reunioesAtivas().filter(function (x) { return lista.some(function (b) { return sobrepoe(x.t0, x.t1, +new Date(b.inicio), +new Date(b.fim)); }); });
+    if (batem.length && !confirm('Já tem ' + (batem.length > 1 ? batem.length + ' reuniões' : 'reunião') + ' nesse período (' + batem.slice(0, 3).map(function (x) { return x.p.empresa + ', ' + diaHora(x.r.inicio); }).join('; ') +
+      '). Marcar mesmo assim? As reuniões não são canceladas sozinhas: remarque pelo pedido.')) return;
+    var b = $('#form-bloqueio [type="submit"]');
+    depois(api.criarBloqueios(lista), b, rep ? 'Marcado nas próximas ' + rep + ' semanas. Saiu do formulário.' : 'Marcado. Esse horário saiu do formulário.').then(function () {
+      estado.diaAg = d; estado.mes = d.slice(0, 7); estado.slots = null; fecharFolhas(); desenharAgenda();
+    }).catch(function () {});
+  }
+
+  function abrirApagar(id) {
+    var b = estado.bloqueios.filter(function (x) { return x.id === id; })[0]; if (!b) return;
+    var futuras = b.serie ? estado.bloqueios.filter(function (x) { return x.serie === b.serie && x.inicio >= b.inicio; }).length : 0;
+    abrirFolhaBloqueio('<h3 id="fb-titulo">' + esc(b.titulo) + '</h3><p class="lead pequeno">' + esc(periodo(b)) + '</p>' +
+      '<div class="acoes coluna"><button class="btn perigo largo" type="button" data-apagar="um">Apagar' + (futuras > 1 ? ' só este' : '') + '</button>' +
+      (futuras > 1 ? '<button class="btn perigo largo" type="button" data-apagar="serie">Apagar este e as próximas repetições (' + futuras + ')</button>' : '') +
+      '<button class="btn fantasma largo" type="button" data-fechar>Voltar</button></div>' +
+      '<p class="miudo">Ao apagar, o horário volta a aparecer no formulário.</p>');
+    $('#fb-caixa').onclick = function (e) {
+      var bt = e.target.closest('[data-apagar]'); if (!bt) return;
+      $('#fb-caixa').onclick = null;
+      var pr = bt.dataset.apagar === 'serie' ? api.apagarSerie(b.serie, b.inicio) : api.apagarBloqueio(b.id);
+      depois(pr, bt, 'Apagado. O horário voltou para o formulário.').then(function () { estado.slots = null; fecharFolhas(); desenharAgenda(); }).catch(function () {});
+    };
+  }
 
   /* ---------- Detalhe ---------- */
   function abrir(id) {
@@ -268,8 +470,9 @@
     } else if (r.status === 'recusada') {
       c1 = '<div class="alerta-caixa">O cliente pediu outro horário no lugar de ' + esc(diaHora(r.inicio)) + '.</div>' + blocoPropor(p);
     } else {
-      var n = concorrentes(p, r);
+      var n = concorrentes(p, r), bq = bloqueioDa(r);
       c1 = '<p>Pediu para conversar em</p><p class="destaque-hora">' + esc(diaExtenso(r.inicio)) + ', ' + hora(r.inicio) + '</p>' +
+        (bq && !conf ? '<div class="alerta-caixa">Você marcou <b>' + esc(bq.titulo) + '</b> na agenda nesse horário. Proponha outro ou apague o bloqueio.</div>' : '') +
         (conf ? '<div class="alerta-caixa">Esse horário já está reservado para <b>' + esc(conf.empresa) + '</b>. Proponha outro horário.</div>' :
           n ? '<div class="info-caixa">Mais ' + n + (n > 1 ? ' pessoas pediram' : ' pessoa pediu') + ' este horário. Quem você aprovar primeiro fica com ele.</div>' : '') +
         '<div class="acoes"><button class="btn principal pequeno" data-acao="aprovar-reuniao"' + (conf ? ' disabled' : '') + '>Aprovar horário</button>' +

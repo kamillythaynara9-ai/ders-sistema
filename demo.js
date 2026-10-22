@@ -35,6 +35,13 @@
       link_prototipo: 'https://sonhar-e-brincar.vercel.app/', respostas: { origem: 'Instagram', cidade: 'São Paulo', oQueVende: 'Aluguel de brinquedos para festas' },
       reunioes: [reuniao(slotEm(0, 20), 'aprovada')] })
   ];
+  // Agenda de exemplo: uma aula toda semana e uma tarde livre bloqueada.
+  var serieAula = 'demo-serie-aula';
+  var aTer = (9 - new Date(agora - 3 * H).getUTCDay()) % 7 || 7; // próxima terça
+  var bloqueios = [0, 1, 2, 3].map(function (k) { return { id: id(), inicio: slotEm(aTer + k * 7, 19), fim: slotEm(aTer + k * 7, 21), titulo: 'Aula de inglês', tipo: 'compromisso', serie: serieAula }; });
+  bloqueios.push({ id: id(), inicio: slotEm(3, 13), fim: slotEm(3, 17), titulo: 'Dentista', tipo: 'indisponivel', serie: null });
+  function bloqueado(ini, fim) { return bloqueios.some(function (b) { return new Date(b.inicio) < fim && new Date(b.fim) > ini; }); }
+
   var hist = {};
   dados.forEach(function (p) { hist[p.id] = [{ quando: p.criado_em, evento: 'Pedido recebido pelo formulário' }]; });
 
@@ -75,10 +82,14 @@
       var out = [], semana = { 0: [10, 17], 1: [8, 22], 2: [8, 22], 3: [8, 22], 4: [8, 22], 5: [8, 22], 6: [10, 17] };
       for (var i = 0; i <= 14; i++) {
         var base = new Date(agora - 3 * H + i * 864e5), dow = base.getUTCDay(), f = semana[dow];
-        for (var h = f[0]; h + 1 <= f[1]; h++) { var s = slotEm(i, h); if (new Date(s).getTime() >= Date.now() + 2 * H) out.push(s); }
+        for (var h = f[0]; h + 1 <= f[1]; h++) { var s = slotEm(i, h), t = new Date(s).getTime(); if (t >= Date.now() + 2 * H && !bloqueado(new Date(t), new Date(t + H))) out.push(s); }
       }
       return resolve(out);
     },
+    bloqueios: function () { return resolve(bloqueios.slice().sort(function (a, b) { return a.inicio < b.inicio ? -1 : 1; })); },
+    criarBloqueios: function (lista) { lista.forEach(function (b) { bloqueios.push(Object.assign({ id: id() }, b)); }); return resolve(true); },
+    apagarBloqueio: function (bid) { bloqueios = bloqueios.filter(function (b) { return b.id !== bid; }); return resolve(true); },
+    apagarSerie: function (serie, desde) { bloqueios = bloqueios.filter(function (b) { return !(b.serie === serie && b.inicio >= desde); }); return resolve(true); },
     logoUrl: function () { return ''; }
   };
 })();

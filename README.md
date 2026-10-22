@@ -8,3 +8,4 @@ repositório + aprovação da produção, revisão do site e do vídeo, envio ao
 - `config.js`: URL do Supabase e chave anon (pública; a proteção está nas regras do banco).
 - Demonstração para o portfólio: abra com `?demo` (usuário `demo`, senha `demo`). Nada é salvo.
 - Cabeçalhos de segurança em `vercel.json`.
+- Agenda: a aba Agenda tem o calendário do mês e os bloqueios (indisponível ou compromisso, com repetição semanal). Horário bloqueado some do formulário e não pode ser proposto (tabela `bloqueios`, filtrada em `agenda_slots()`).
