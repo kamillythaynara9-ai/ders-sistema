@@ -441,6 +441,52 @@
 
   function passo(n, titulo, corpo, cls) { return '<section class="bloco ' + (cls || '') + '"><h4><span class="passo">' + n + '</span>' + titulo + '</h4>' + corpo + '</section>'; }
 
+  /* ---------- O que o cliente quer ---------- */
+  var GRUPOS_RESP = [
+    ['O site', ['funcionalidades', 'estilo', 'cores', 'referencias', 'prazo']],
+    ['O negócio', ['segmento', 'publico', 'cidade', 'tempo', 'equipe', 'atendimento']],
+    ['Hoje na internet', ['instagram', 'siteAtual', 'google', 'dominio', 'fotos']],
+    ['Mais', ['origem', 'email']]
+  ];
+  function vazio(v) { return v == null || v === '' || (Array.isArray(v) && !v.length); }
+  function valorResp(k, v, resp) {
+    if (Array.isArray(v)) return v.map(function (x) { return '<span class="etiqueta">' + esc(x) + '</span>'; }).join(' ');
+    var t = String(v);
+    if (k === 'cidade') return esc(t + (resp.uf ? ' / ' + resp.uf : ''));
+    if (k === 'cores') {
+      var hex = t.match(/#[0-9a-f]{6}\b/gi);
+      return hex ? hex.map(function (c) { return '<span class="cor-amostra" style="background:' + c + '" title="' + c + '"></span><code>' + c + '</code>'; }).join(' ') : esc(t);
+    }
+    if (k === 'instagram') { var u = t.replace(/^@/, '').replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').replace(/[/?].*$/, ''); return /^[\w.]{1,30}$/.test(u) ? '<a href="https://instagram.com/' + encodeURIComponent(u) + '" target="_blank" rel="noopener">@' + esc(u) + '</a>' : esc(t); }
+    return esc(t).replace(/https?:\/\/[^\s<)]+/g, function (m) { return '<a href="' + m + '" target="_blank" rel="noopener">' + m + '</a>'; }).replace(/\n/g, '<br>');
+  }
+  function blocoPedido(p, logo) {
+    var resp = Object.assign({}, p.respostas || {});
+    ['segmento', 'tipoSite', 'objetivo'].forEach(function (k) { if (vazio(resp[k]) && p[k === 'tipoSite' ? 'tipo_site' : k]) resp[k] = p[k === 'tipoSite' ? 'tipo_site' : k]; });
+    var usados = { oQueVende: true, tipoSite: true, objetivo: true }, corpo = '';
+    GRUPOS_RESP.forEach(function (g) {
+      var linhas = '';
+      g[1].forEach(function (k) { usados[k] = true; if (vazio(resp[k])) return; linhas += '<dt>' + esc(ROTULOS[k] || k) + '</dt><dd>' + valorResp(k, resp[k], resp) + '</dd>'; });
+      if (linhas) corpo += '<h5>' + g[0] + '</h5><dl class="dl">' + linhas + '</dl>';
+    });
+    // qualquer resposta nova do formulário que não esteja nos grupos
+    var outros = '';
+    Object.keys(resp).forEach(function (k) {
+      if (usados[k] || k.charAt(0) === '_' || /^(nome|whatsapp|empresa|uf|observacoes|horario|logo_path|armadilha|aceite)$/.test(k) || vazio(resp[k]) || typeof resp[k] === 'object' && !Array.isArray(resp[k])) return;
+      outros += '<dt>' + esc(ROTULOS[k] || k) + '</dt><dd>' + valorResp(k, resp[k], resp) + '</dd>';
+    });
+    if (outros) corpo += '<h5>Outras respostas</h5><dl class="dl">' + outros + '</dl>';
+    var obs = !vazio(resp.observacoes) ? '<div class="obs-cliente"><b>O que ele escreveu</b>' + valorResp('observacoes', resp.observacoes, resp) + '</div>' : '';
+    var vende = !vazio(resp.oQueVende) ? '<p class="pedido-resumo">' + esc(resp.oQueVende) + '</p>' : '';
+    var topo = '<div class="pedido-topo">' +
+      (logo ? '<a class="logo-grande" href="' + esc(logo) + '" target="_blank" rel="noopener" title="Abrir a logo em tamanho real"><img src="' + esc(logo) + '" alt="Logo da ' + esc(p.empresa) + '"></a>'
+        : '<div class="logo-grande sem"><span>Sem logo</span></div>') +
+      '<div><span class="rotulo-mini">Pediu</span><b class="pedido-tipo">' + esc(resp.tipoSite || 'Tipo não informado') + '</b>' +
+      (resp.objetivo ? '<span class="pedido-obj">' + esc(resp.objetivo) + '</span>' : '') +
+      (logo ? '<a class="miudo" href="' + esc(logo) + '" download target="_blank" rel="noopener">Baixar logo</a>' : '') + '</div></div>';
+    return '<section class="bloco pedido-cliente"><h4>O que o cliente quer</h4>' + topo + vende + obs + corpo + '</section>';
+  }
+
   function desenharDetalhe(p) {
     var r = reuniaoAtual(p), conf = conflitoDe(p, r), st = p.status;
     $('#det-empresa').textContent = p.empresa;
@@ -448,11 +494,14 @@
     var logo = api.logoUrl(p.logo_path), h = '';
 
     // Contato
-    h += '<section class="bloco"><div class="contato">' + (logo ? '<span class="logo-cliente" style="background-image:url(\'' + esc(logo) + '\')" role="img" aria-label="Logo"></span>' : '') +
+    h += '<section class="bloco"><div class="contato">' +
       '<div><b>' + esc(p.nome) + '</b><span>' + esc(foneBonito(p.whatsapp)) + (p.email ? ' · ' + esc(p.email) : '') + '</span></div></div>' +
       '<div class="acoes" style="margin-top:14px">' +
       '<button class="btn secundario pequeno" data-acao="whats-analise">' + icWhats() + ' Avisar "em análise"</button>' +
       '<a class="btn fantasma pequeno" href="https://wa.me/' + fone(p.whatsapp) + '" target="_blank" rel="noopener">Abrir conversa</a></div></section>';
+
+    // O que o cliente quer (respostas + logo), logo no começo para decidir se aceita
+    h += blocoPedido(p, logo);
 
     // 1. Reunião
     var c1 = '', feito1 = r && r.status === 'aprovada';
@@ -520,13 +569,7 @@
     if (st === 'fechado') h += '<section class="bloco"><h4>Cliente fechado 🎉</h4><div class="acoes"><button class="btn secundario pequeno" data-acao="whats-materiais">' + icWhats() + ' Mandar formulário de materiais</button></div></section>';
     if (st === 'recusado' || st === 'perdido') h += '<section class="bloco"><h4>' + (st === 'recusado' ? 'Pedido recusado' : 'Não fechou') + '</h4><div class="acoes"><button class="btn fantasma pequeno" data-acao="reabrir">Reabrir pedido</button></div></section>';
 
-    // Respostas
-    var resp = p.respostas || {}, linhas = '';
-    Object.keys(ROTULOS).forEach(function (k) {
-      var v = resp[k]; if (v == null || v === '' || (Array.isArray(v) && !v.length)) return;
-      linhas += '<dt>' + esc(ROTULOS[k]) + '</dt><dd>' + esc(Array.isArray(v) ? v.join(', ') : v) + '</dd>';
-    });
-    h += '<section class="bloco"><details class="respostas"' + (st === 'novo' ? ' open' : '') + '><summary>Respostas do formulário</summary><dl class="dl">' + (linhas || '<dt>—</dt><dd>Sem respostas detalhadas.</dd>') + '</dl></details></section>';
+    var resp = p.respostas || {};
 
     // Notas internas
     h += '<section class="bloco"><h4>Anotações</h4><label class="campo" style="margin:8px 0 10px"><textarea id="notas-internas" placeholder="Só você vê isto">' + esc(resp._anotacoes || '') + '</textarea></label>' +

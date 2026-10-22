@@ -166,10 +166,24 @@ code { background: var(--violeta-claro); padding: 1px 6px; border-radius: 6px; f
 .dl { display: grid; grid-template-columns: minmax(110px, 38%) 1fr; gap: 8px 12px; margin: 10px 0 0; font-size: .92rem; }
 .dl dt { color: var(--suave); }
 .dl dd { margin: 0; word-break: break-word; }
-details.respostas summary { cursor: pointer; font-weight: 700; color: var(--roxo-escuro); list-style: none; }
-details.respostas summary::-webkit-details-marker { display: none; }
-details.respostas summary::after { content: ' +'; }
-details.respostas[open] summary::after { content: ' −'; }
+
+/* O que o cliente quer */
+.pedido-cliente h5 { margin: 18px 0 2px; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--violeta); }
+.pedido-topo { display: flex; align-items: center; gap: 16px; margin: 12px 0 6px; }
+.logo-grande { flex: none; width: 112px; height: 112px; border-radius: 22px; display: grid; place-items: center; padding: 10px;
+  background: repeating-conic-gradient(#F1EEF6 0 25%, #fff 0 50%) 0 0 / 16px 16px; box-shadow: inset 0 0 0 1px var(--linha); }
+.logo-grande img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.logo-grande.sem span { color: var(--suave); font-size: .8rem; }
+.pedido-topo > div { display: grid; gap: 4px; min-width: 0; }
+.rotulo-mini { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--suave); font-weight: 700; }
+.pedido-tipo { font-family: var(--titulo); font-size: 1.15rem; line-height: 1.2; }
+.pedido-obj { color: var(--texto); font-size: .92rem; }
+.pedido-resumo { font-size: 1rem !important; color: var(--tinta) !important; background: var(--papel); border-radius: 14px; padding: 12px 14px; margin: 12px 0 0 !important; }
+.obs-cliente { background: var(--ambar-claro); color: #5E3E0E; border-radius: 14px; padding: 12px 14px; margin-top: 10px; font-size: .94rem; line-height: 1.5; }
+.obs-cliente b { display: block; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
+.pedido-cliente .dl dd .etiqueta { display: inline-block; margin: 0 4px 4px 0; }
+.pedido-cliente a { color: var(--violeta); font-weight: 600; word-break: break-all; }
+.cor-amostra { display: inline-block; width: 18px; height: 18px; border-radius: 6px; vertical-align: middle; margin-right: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
 
 .video-revisao { width: 100%; max-height: 70dvh; border-radius: 16px; background: #000; margin: 6px 0 12px; }
 .historico { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; font-size: .9rem; }

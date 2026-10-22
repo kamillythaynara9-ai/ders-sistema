@@ -19,7 +19,7 @@
   var amanha10 = slotEm(1, 10), amanha15 = slotEm(1, 15), depois11 = slotEm(2, 11);
   var dados = [
     pedido({ empresa: 'Doce Encanto Confeitaria', nome: 'Mariana Alves', whatsapp: '11900000001', segmento: 'Alimentação', tipo_site: 'Site com Catálogo', status: 'novo', horas: 1,
-      respostas: { origem: 'Instagram', cidade: 'São Paulo', tempo: '3 a 10 anos', objetivo: 'Receber pedidos pelo WhatsApp', oQueVende: 'Bolos de festa, doces finos e kits de presente', prazo: 'Neste mês', funcionalidades: ['Catálogo de produtos', 'Galeria de fotos'] },
+      logo_path: 'simbolo.png', respostas: { origem: 'Instagram', segmento: 'Alimentação', cidade: 'São Paulo', uf: 'SP', tempo: '3 a 10 anos', equipe: '2 a 5', atendimento: ['WhatsApp', 'Entrega'], instagram: '@doceencanto', siteAtual: 'Não tenho', google: 'Sim', tipoSite: 'Site com Catálogo', objetivo: 'Receber pedidos pelo WhatsApp', oQueVende: 'Bolos de festa, doces finos e kits de presente', publico: 'Mães da região e empresas', cores: '#E86A92 #F7D6E0 #5A2E3A', estilo: 'Delicado', referencias: 'Gosto do perfil https://instagram.com/exemplo', fotos: 'Tenho fotos de celular', dominio: 'Ainda não', prazo: 'Neste mês', funcionalidades: ['Catálogo de produtos', 'Galeria de fotos'], observacoes: 'Queria que o cliente montasse o kit de presente escolhendo os doces.' },
       reunioes: [reuniao(amanha10, 'pendente')] }),
     pedido({ empresa: 'Studio Bella Forma', nome: 'Carla Souza', whatsapp: '11900000002', segmento: 'Beleza e estética', tipo_site: 'Site para Empresa', status: 'novo', horas: 3,
       respostas: { origem: 'Indicação', cidade: 'Guarulhos', objetivo: 'Agendamento de horários', oQueVende: 'Estética facial e corporal', prazo: 'O quanto antes', funcionalidades: ['Agendamento'] },
@@ -90,6 +90,6 @@
     criarBloqueios: function (lista) { lista.forEach(function (b) { bloqueios.push(Object.assign({ id: id() }, b)); }); return resolve(true); },
     apagarBloqueio: function (bid) { bloqueios = bloqueios.filter(function (b) { return b.id !== bid; }); return resolve(true); },
     apagarSerie: function (serie, desde) { bloqueios = bloqueios.filter(function (b) { return !(b.serie === serie && b.inicio >= desde); }); return resolve(true); },
-    logoUrl: function () { return ''; }
+    logoUrl: function (path) { return path || ''; }
   };
 })();
