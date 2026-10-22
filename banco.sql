@@ -360,6 +360,44 @@ do $$ begin
 exception when duplicate_object or undefined_object then null;
 end $$;
 
+-- ---------- Aviso instantâneo para o Claude ----------
+-- Quando um pedido vai para criação (ou recebe ajuste), o banco comenta no pull request
+-- de avisos do GitHub (só o código do pedido). O Claude acompanha esse pull request e começa na hora.
+-- O token do GitHub fica só aqui no banco: select public.definir_aviso_github('token', 'dono/repo', numero_do_pr);
+create extension if not exists pg_net;
+
+create or replace function public.avisar_claude() returns trigger
+language plpgsql security definer set search_path = public, extensions as $$
+declare cfg jsonb := (select valor from public.config where chave = 'aviso_github');
+begin
+  if cfg is null or new.status is not distinct from old.status or new.status not in ('em_criacao', 'ajuste') then return new; end if;
+  perform net.http_post(
+    url := 'https://api.github.com/repos/' || (cfg ->> 'repo') || '/issues/' || (cfg ->> 'pr') || '/comments',
+    body := jsonb_build_object('body', 'Pedido ' || new.codigo ||
+      case when new.status = 'ajuste' then ' recebeu ajuste.' else ' aprovado para criação.' end || ' (aviso automático do Sistema DERS)'),
+    headers := jsonb_build_object('Authorization', 'Bearer ' || (cfg ->> 'token'), 'Accept', 'application/vnd.github+json',
+      'User-Agent', 'ders-sistema', 'Content-Type', 'application/json'));
+  return new;
+exception when others then
+  return new; -- o aviso nunca trava a aprovação; a rotina de hora em hora pega o pedido do mesmo jeito
+end $$;
+
+drop trigger if exists pedidos_avisar on public.pedidos;
+create trigger pedidos_avisar after update of status on public.pedidos
+  for each row execute function public.avisar_claude();
+
+create or replace function public.definir_aviso_github(p_token text, p_repo text, p_pr int)
+returns void language plpgsql volatile security invoker set search_path = public, extensions as $$
+begin
+  if not public.e_admin() and current_user not in ('postgres', 'supabase_admin') then raise exception 'sem_permissao'; end if;
+  if p_token !~ '^(github_pat_|ghp_)[A-Za-z0-9_]{20,}$' then raise exception 'token_invalido: cole o token do GitHub (começa com github_pat_)'; end if;
+  insert into public.config (chave, valor) values ('aviso_github', jsonb_build_object('token', p_token, 'repo', p_repo, 'pr', p_pr))
+  on conflict (chave) do update set valor = excluded.valor;
+end $$;
+revoke execute on function public.avisar_claude() from public, anon, authenticated;
+revoke execute on function public.definir_aviso_github(text, text, int) from public, anon;
+grant execute on function public.definir_aviso_github(text, text, int) to authenticated;
+
 -- ---------- Logos enviadas pelo formulário ----------
 -- Pasta pública de leitura (logo é material público da marca), com nome aleatório.
 -- Visitantes só podem ENVIAR imagens de até 5 MB; não listam, não trocam, não apagam.
