@@ -71,10 +71,12 @@ create table if not exists public.reunioes (
   criado_por text not null default 'cliente' check (criado_por in ('cliente','ders')),
   token uuid not null default gen_random_uuid(),
   criado_em timestamptz not null default now(),
-  respondido_em timestamptz
+  respondido_em timestamptz,
+  tipo text not null default 'prototipo' check (tipo in ('prototipo','acompanhamento','entrega')),
+  titulo text,
+  -- Duas reuniões confirmadas nunca se sobrepõem (qualquer tipo).
+  constraint reunioes_sem_sobrepor exclude using gist (tstzrange(inicio, fim) with &&) where (status = 'aprovada')
 );
--- Um horário aprovado nunca pode ter duas reuniões.
-create unique index if not exists reunioes_um_aprovado on public.reunioes (inicio) where status = 'aprovada';
 create index if not exists reunioes_pedido on public.reunioes (pedido_id);
 create unique index if not exists reunioes_token on public.reunioes (token);
 
@@ -164,15 +166,24 @@ begin
   end loop;
 end $$;
 
+-- O período está livre? (sem reunião confirmada ou proposta e sem bloqueio). p_ignorar = reunião que está sendo aprovada.
+create or replace function public.periodo_livre(p_inicio timestamptz, p_fim timestamptz, p_ignorar uuid default null)
+returns boolean language sql stable security definer set search_path = public, extensions as $$
+  select not exists (select 1 from public.reunioes r where r.status in ('aprovada','proposta') and r.id is distinct from p_ignorar
+                     and r.inicio < p_fim and r.fim > p_inicio)
+     and not exists (select 1 from public.bloqueios b where b.inicio < p_fim and b.fim > p_inicio);
+$$;
+
 -- Para o formulário: horários livres e "sujeito a confirmação" (já pedidos, ainda não aprovados).
--- Horários aprovados ou em proposta para outra pessoa não aparecem.
+-- Horários que encostam em qualquer reunião confirmada ou proposta (de qualquer tipo) não aparecem.
 create or replace function public.horarios_disponiveis()
 returns table (inicio timestamptz, estado text)
 language sql stable security definer set search_path = public, extensions as $$
-  select s, case when exists (select 1 from public.reunioes r where r.inicio = s and r.status = 'pendente')
+  with c as (select make_interval(mins => (valor ->> 'duracao_min')::int) as dur from public.config where chave = 'agenda')
+  select s, case when exists (select 1 from public.reunioes r where r.status = 'pendente' and r.inicio < s + c.dur and r.fim > s)
                  then 'sujeito' else 'livre' end
-  from public.agenda_slots() s
-  where not exists (select 1 from public.reunioes r where r.inicio = s and r.status in ('aprovada','proposta'))
+  from public.agenda_slots() s, c
+  where public.periodo_livre(s, s + c.dur)
   order by s;
 $$;
 
@@ -196,7 +207,7 @@ begin
   -- o horário precisa ser válido e não estar tomado
   if inicio is not null then
     if not exists (select 1 from public.agenda_slots() s where s = inicio) then raise exception 'horario_invalido'; end if;
-    if exists (select 1 from public.reunioes r where r.inicio = criar_pedido.inicio and r.status in ('aprovada','proposta')) then raise exception 'horario_ocupado'; end if;
+    if not public.periodo_livre(criar_pedido.inicio, criar_pedido.inicio + make_interval(mins => (cfg ->> 'duracao_min')::int)) then raise exception 'horario_ocupado'; end if;
   end if;
 
   loop
@@ -237,16 +248,20 @@ begin
   if not found then raise exception 'nao_encontrada'; end if;
   if r.status <> 'proposta' then return r.status; end if;
   if aceita then
+    -- a reunião de protótipo antiga (se havia) dá lugar à nova
+    if r.tipo = 'prototipo' then
+      update public.reunioes set status = 'cancelada' where pedido_id = r.pedido_id and id <> r.id and tipo = 'prototipo' and status = 'aprovada';
+    end if;
     begin
       update public.reunioes set status = 'aprovada', respondido_em = now() where id = r.id;
-    exception when unique_violation then
+    exception when unique_violation or exclusion_violation then
       update public.reunioes set status = 'cancelada', respondido_em = now() where id = r.id;
       update public.pedidos set status = 'remarcar' where id = r.pedido_id;
       insert into public.historico (pedido_id, evento) values (r.pedido_id, 'Cliente aceitou, mas o horário já tinha sido ocupado');
       return 'ocupado';
     end;
     -- outras reuniões do mesmo pedido deixam de valer
-    update public.reunioes set status = 'cancelada' where pedido_id = r.pedido_id and id <> r.id and status in ('pendente','proposta');
+    update public.reunioes set status = 'cancelada' where pedido_id = r.pedido_id and id <> r.id and tipo = r.tipo and status in ('pendente','proposta');
     update public.pedidos set status = 'reuniao_ok' where id = r.pedido_id and status in ('novo','remarcar','aguardando_cliente');
     insert into public.historico (pedido_id, evento, detalhe) values (r.pedido_id, 'Cliente aceitou o novo horário', null);
     return 'aprovada';
@@ -265,9 +280,15 @@ declare r public.reunioes;
 begin
   if not public.e_admin() then raise exception 'sem_permissao'; end if;
   select * into r from public.reunioes where id = p_reuniao for update;
+  if r.tipo = 'prototipo' then
+    update public.reunioes set status = 'cancelada' where pedido_id = r.pedido_id and id <> r.id and tipo = 'prototipo' and status = 'aprovada';
+  end if;
+  if not public.periodo_livre(r.inicio, r.fim, r.id) then raise exception 'horario_ocupado'; end if;
   update public.reunioes set status = 'aprovada', respondido_em = now() where id = r.id;
-  update public.reunioes set status = 'cancelada' where pedido_id = r.pedido_id and id <> r.id and status in ('pendente','proposta');
-  update public.pedidos set status = 'reuniao_ok' where id = r.pedido_id and status in ('novo','remarcar','aguardando_cliente');
+  update public.reunioes set status = 'cancelada' where pedido_id = r.pedido_id and id <> r.id and tipo = r.tipo and status in ('pendente','proposta');
+  if r.tipo = 'prototipo' then
+    update public.pedidos set status = 'reuniao_ok' where id = r.pedido_id and status in ('novo','remarcar','aguardando_cliente');
+  end if;
   insert into public.historico (pedido_id, evento, detalhe) values (r.pedido_id, 'Horário da reunião aprovado', null);
 end $$;
 
@@ -276,9 +297,9 @@ returns uuid language plpgsql volatile security invoker set search_path = public
 declare cfg jsonb := (select valor from public.config where chave = 'agenda'); v_token uuid;
 begin
   if not public.e_admin() then raise exception 'sem_permissao'; end if;
-  if exists (select 1 from public.reunioes where inicio = p_inicio and status in ('aprovada','proposta')) then raise exception 'horario_ocupado'; end if;
   if exists (select 1 from public.bloqueios b where b.inicio < p_inicio + make_interval(mins => (cfg ->> 'duracao_min')::int) and b.fim > p_inicio) then raise exception 'horario_bloqueado'; end if;
-  update public.reunioes set status = 'cancelada' where pedido_id = p_pedido and status in ('pendente','proposta');
+  update public.reunioes set status = 'cancelada' where pedido_id = p_pedido and tipo = 'prototipo' and status in ('pendente','proposta');
+  if not public.periodo_livre(p_inicio, p_inicio + make_interval(mins => (cfg ->> 'duracao_min')::int)) then raise exception 'horario_ocupado'; end if;
   insert into public.reunioes (pedido_id, inicio, fim, status, criado_por)
   values (p_pedido, p_inicio, p_inicio + make_interval(mins => (cfg ->> 'duracao_min')::int), 'proposta', 'ders')
   returning token into v_token;
@@ -296,6 +317,23 @@ begin
   select id into v_id from public.reunioes where pedido_id = p_pedido and status = 'proposta' order by criado_em desc limit 1;
   if v_id is null then raise exception 'sem_proposta'; end if;
   perform public.aprovar_reuniao(v_id);
+end $$;
+
+-- Reunião marcada direto pela Thaynara (acompanhamento do site, entrega no 7º dia...). Já entra confirmada.
+create or replace function public.marcar_reuniao(p_pedido uuid, p_inicio timestamptz, p_minutos int, p_tipo text, p_titulo text default null)
+returns uuid language plpgsql volatile security invoker set search_path = public, extensions as $$
+declare v_id uuid; v_fim timestamptz := p_inicio + make_interval(mins => greatest(15, least(coalesce(p_minutos, 60), 480)));
+begin
+  if not public.e_admin() then raise exception 'sem_permissao'; end if;
+  if p_tipo not in ('prototipo','acompanhamento','entrega') then raise exception 'tipo_invalido'; end if;
+  if exists (select 1 from public.bloqueios b where b.inicio < v_fim and b.fim > p_inicio) then raise exception 'horario_bloqueado'; end if;
+  if not public.periodo_livre(p_inicio, v_fim) then raise exception 'horario_ocupado'; end if;
+  insert into public.reunioes (pedido_id, inicio, fim, status, criado_por, tipo, titulo, respondido_em)
+  values (p_pedido, p_inicio, v_fim, 'aprovada', 'ders', p_tipo, nullif(left(trim(coalesce(p_titulo, '')), 120), ''), now())
+  returning id into v_id;
+  insert into public.historico (pedido_id, evento, detalhe)
+  values (p_pedido, 'Reunião marcada', to_char(p_inicio at time zone 'America/Sao_Paulo', 'DD/MM HH24:MI') || coalesce(' · ' || nullif(trim(p_titulo), ''), ''));
+  return v_id;
 end $$;
 
 -- ---------- Robô de produção (Claude) ----------
@@ -347,6 +385,8 @@ grant execute on function public.agenda_slots() to authenticated;
 grant execute on function public.aprovar_reuniao(uuid) to authenticated;
 grant execute on function public.propor_horario(uuid, timestamptz) to authenticated;
 grant execute on function public.confirmar_proposta(uuid) to authenticated;
+grant execute on function public.periodo_livre(timestamptz, timestamptz, uuid) to authenticated;
+grant execute on function public.marcar_reuniao(uuid, timestamptz, int, text, text) to authenticated;
 grant execute on function public.definir_chave_robo(text) to authenticated;
 grant execute on function public.tocar_atualizado() to authenticated;
 

@@ -283,3 +283,18 @@ code { background: var(--violeta-claro); padding: 1px 6px; border-radius: 6px; f
 .carregando { display: grid; place-items: center; padding: 50px 0; }
 .carregando span { width: 36px; height: 36px; border-radius: 50%; border: 3px solid var(--violeta-claro); border-top-color: var(--violeta); animation: gira .8s linear infinite; }
 @keyframes gira { to { transform: rotate(360deg); } }
+
+/* Agenda única: tipo de reunião e marcar pelo pedido */
+.tipo-reun { display: inline-block; font-size: .7rem; font-weight: 800; letter-spacing: .02em; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: 1px; background: #EFEAF8; color: #5E4A92; }
+.tipo-reun.t-acompanhamento { background: #E3F1EC; color: #23705A; }
+.tipo-reun.t-entrega { background: #FBEBD9; color: #9A5A12; }
+.reun-lista { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
+.reun-item { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; border-radius: 14px; background: var(--fundo-suave, #F6F4FA); }
+.reun-item b { display: block; margin-top: 4px; }
+.reun-item small { display: block; color: var(--suave, #6B6480); }
+.reun-item.passou { opacity: .6; }
+.marcar { margin-top: 14px; }
+.marcar .horas { margin-bottom: 8px; }
+.mr-situacao { font-weight: 700; margin: 6px 0 12px; min-height: 1.2em; }
+.mr-situacao.ok { color: #23705A; }
+.mr-situacao.erro { color: #C2413B; }

@@ -33,7 +33,10 @@
       reunioes: [reuniao(depois11, 'aprovada')] }),
     pedido({ empresa: 'Festa Mágica Brinquedos', nome: 'Juliana Rocha', whatsapp: '11900000005', segmento: 'Festas e eventos', tipo_site: 'Site com Catálogo', status: 'enviado', horas: 50, repositorio: 'festa-magica',
       link_prototipo: 'https://sonhar-e-brincar.vercel.app/', respostas: { origem: 'Instagram', cidade: 'São Paulo', oQueVende: 'Aluguel de brinquedos para festas' },
-      reunioes: [reuniao(slotEm(0, 20), 'aprovada')] })
+      reunioes: [reuniao(slotEm(0, 20), 'aprovada')] }),
+    pedido({ empresa: 'Ateliê Flor de Lis', nome: 'Paula Nunes', whatsapp: '11900000006', segmento: 'Moda', tipo_site: 'Site para Empresa', status: 'fechado', horas: 80, repositorio: 'flor-de-lis',
+      link_prototipo: 'https://sonhar-e-brincar.vercel.app/', respostas: { origem: 'Indicação', cidade: 'São Paulo', oQueVende: 'Vestidos sob medida' },
+      reunioes: [reuniao(slotEm(-3, 16), 'aprovada'), Object.assign(reuniao(slotEm(2, 14), 'aprovada', 'ders'), { tipo: 'acompanhamento', titulo: 'Mostrar a primeira versão' })] })
   ];
   // Agenda de exemplo: uma aula toda semana e uma tarde livre bloqueada.
   var serieAula = 'demo-serie-aula';
@@ -90,6 +93,15 @@
     criarBloqueios: function (lista) { lista.forEach(function (b) { bloqueios.push(Object.assign({ id: id() }, b)); }); return resolve(true); },
     apagarBloqueio: function (bid) { bloqueios = bloqueios.filter(function (b) { return b.id !== bid; }); return resolve(true); },
     apagarSerie: function (serie, desde) { bloqueios = bloqueios.filter(function (b) { return !(b.serie === serie && b.inicio >= desde); }); return resolve(true); },
+    marcarReuniao: function (pid, inicio, minutos, tipo, titulo) {
+      var t0 = new Date(inicio), t1 = new Date(t0.getTime() + minutos * 60e3);
+      if (bloqueado(t0, t1)) return Promise.reject(new Error('horario_bloqueado'));
+      var bate = dados.some(function (p) { return p.reunioes.some(function (r) { return (r.status === 'aprovada' || r.status === 'proposta') && new Date(r.inicio) < t1 && new Date(r.fim) > t0; }); });
+      if (bate) return Promise.reject(new Error('horario_ocupado'));
+      var r = reuniao(t0.toISOString(), 'aprovada', 'ders'); r.fim = t1.toISOString(); r.tipo = tipo; r.titulo = titulo || null;
+      acha(pid).reunioes.push(r); reg(pid, 'Reunião marcada', titulo || ''); return resolve(r.id);
+    },
+    cancelarReuniao: function (rid) { dados.forEach(function (p) { p.reunioes.forEach(function (r) { if (r.id === rid) r.status = 'cancelada'; }); }); return resolve(true); },
     logoUrl: function (path) { return path || ''; }
   };
 })();

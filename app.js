@@ -43,7 +43,7 @@
     var m = (e && (e.message || e.error_description || e.msg)) || String(e);
     var mapa = { horario_ocupado: 'Esse horário já está ocupado. Escolha outro.', sem_permissao: 'Sem permissão. Entre de novo.', sem_proposta: 'Não há proposta aberta para este pedido.', horario_bloqueado: 'Esse horário está marcado como indisponível na sua agenda.' };
     for (var k in mapa) if (m.indexOf(k) >= 0) return mapa[k];
-    if (/duplicate key|reunioes_um_aprovado/.test(m)) return 'Já existe uma reunião aprovada nesse horário.';
+    if (/duplicate key|reunioes_um_aprovado|reunioes_sem_sobrepor|conflicting key/.test(m)) return 'Já existe uma reunião confirmada nesse horário.';
     if (/Invalid login/i.test(m)) return 'Usuário ou senha incorretos.';
     return 'Não deu certo agora. Confira a internet e tente de novo.';
   }
@@ -60,6 +60,7 @@
       t += r && r.status === 'aprovada' ? '\n\nNa nossa conversa de ' + diaExtenso(r.inicio) + ', às ' + hora(r.inicio) + ', te explico tudo e você me diz o que quer mudar.' : '\n\nMe conta o que achou!';
       return t;
     },
+    reuniao: function (p, r) { return 'Oi, ' + primeiroNome(p.nome) + '! Marquei nossa reunião ' + (r.tipo === 'entrega' ? 'de entrega do site' : 'sobre o site') + ' da ' + p.empresa + ' para ' + diaExtenso(r.inicio) + ', às ' + hora(r.inicio) + '. Até lá!'; },
     materiais: function (p) { return 'Que bom ter você com a gente, ' + primeiroNome(p.nome) + '! Para montar o site final da ' + p.empresa + ', preciso dos seus materiais (fotos, textos, contatos). É só preencher aqui, leva poucos minutos: ' + CFG.formsUrl + '/materiais/'; }
   };
 
@@ -86,6 +87,8 @@
       cancelarReunioes: function (id) { return sb.from('reunioes').update({ status: 'cancelada' }).eq('pedido_id', id).in('status', ['pendente', 'proposta']).then(ok); },
       aprovarReuniao: function (rid) { return sb.rpc('aprovar_reuniao', { p_reuniao: rid }).then(ok); },
       proporHorario: function (id, inicio) { return sb.rpc('propor_horario', { p_pedido: id, p_inicio: inicio }).then(ok); },
+      marcarReuniao: function (id, inicio, minutos, tipo, titulo) { return sb.rpc('marcar_reuniao', { p_pedido: id, p_inicio: inicio, p_minutos: minutos, p_tipo: tipo, p_titulo: titulo || null }).then(ok); },
+      cancelarReuniao: function (rid) { return sb.from('reunioes').update({ status: 'cancelada' }).eq('id', rid).then(ok); },
       confirmarProposta: function (id) { return sb.rpc('confirmar_proposta', { p_pedido: id }).then(ok); },
       slots: function () { return sb.rpc('agenda_slots').then(ok); },
       bloqueios: function () { return sb.from('bloqueios').select('*').gte('fim', new Date(Date.now() - 62 * 864e5).toISOString()).order('inicio').limit(2000).then(ok); },
@@ -101,24 +104,26 @@
     };
   }
 
+  /* ---------- Tipos de reunião (uma agenda só para todas) ---------- */
+  var TIPOS = { prototipo: 'Protótipo', acompanhamento: 'Acompanhamento', entrega: 'Entrega do site' };
+  function tipoDe(r) { return (r && r.tipo) || 'prototipo'; }
+  function etiquetaTipo(r) { var t = tipoDe(r); return '<span class="tipo-reun t-' + t + '">' + esc(TIPOS[t]) + '</span>'; }
+  function tituloReun(x) { return x.r.titulo ? x.p.empresa + ' · ' + x.r.titulo : x.p.empresa; }
+
   /* ---------- Estado ---------- */
   var estado = { pedidos: [], bloqueios: [], filtro: 'agir', busca: '', aberto: null, slots: null };
 
   function reuniaoAtual(p) {
-    var rs = (p.reunioes || []).filter(function (r) { return r.status !== 'cancelada'; });
+    var rs = (p.reunioes || []).filter(function (r) { return r.status !== 'cancelada' && tipoDe(r) === 'prototipo'; });
     var ordem = { aprovada: 0, proposta: 1, pendente: 2, recusada: 3 };
     rs.sort(function (a, b) { return (ordem[a.status] - ordem[b.status]) || (new Date(b.criado_em) - new Date(a.criado_em)); });
     return rs[0] || null;
   }
   function conflitoDe(p, r) {
     if (!r || r.status !== 'pendente') return null;
-    var t = new Date(r.inicio).getTime();
-    for (var i = 0; i < estado.pedidos.length; i++) {
-      var o = estado.pedidos[i]; if (o.id === p.id) continue;
-      var achou = (o.reunioes || []).some(function (x) { return (x.status === 'aprovada' || x.status === 'proposta') && new Date(x.inicio).getTime() === t; });
-      if (achou) return o;
-    }
-    return null;
+    var t0 = +new Date(r.inicio), t1 = r.fim ? +new Date(r.fim) : t0 + 3600e3;
+    var c = ocupantes(t0, t1, r.id)[0];
+    return c ? c.p : null;
   }
   function concorrentes(p, r) {
     if (!r || r.status !== 'pendente') return 0;
@@ -230,6 +235,10 @@
   function sobrepoe(a0, a1, b0, b1) { return a0 < b1 && a1 > b0; }
   function bloqueiosEntre(t0, t1) { return estado.bloqueios.filter(function (b) { return sobrepoe(+new Date(b.inicio), +new Date(b.fim), t0, t1); }); }
   function bloqueioDa(r) { var t = +new Date(r.inicio); return bloqueiosEntre(t, r.fim ? +new Date(r.fim) : t + 3600e3)[0] || null; }
+  // Reuniões confirmadas ou propostas que encostam no período (qualquer pedido, qualquer tipo).
+  function ocupantes(t0, t1, ignorar) {
+    return reunioesAtivas().filter(function (x) { return x.r.id !== ignorar && (x.r.status === 'aprovada' || x.r.status === 'proposta') && sobrepoe(x.t0, x.t1, t0, t1); });
+  }
   function reunioesAtivas() {
     var out = [];
     estado.pedidos.forEach(function (p) {
@@ -296,7 +305,7 @@
     if (f) for (var h = f[0]; h < f[1]; h++) {
       var s = +momento(d, hh(h)), e = s + 3600e3;
       if (e <= agora) continue;
-      var ocupado = itens.some(function (i) { return i.tipo === 'bloq' ? sobrepoe(i.b0, i.b1, s, e) : i.tipo === 'reun' && i.x.t0 === s; });
+      var ocupado = itens.some(function (i) { return i.tipo === 'bloq' ? sobrepoe(i.b0, i.b1, s, e) : i.tipo === 'reun' && sobrepoe(i.x.t0, i.x.t1, s, e); });
       if (!ocupado) itens.push({ tipo: 'livre', t: s, ordem: 2, h: h });
     }
     itens.sort(function (a, b) { return (a.t - b.t) || (a.ordem - b.ordem); });
@@ -317,7 +326,7 @@
       if (i.tipo === 'reun') {
         var r = i.x.r, bq = bloqueiosEntre(i.x.t0, i.x.t1)[0];
         var et = bq ? '<span class="etiqueta alerta">Bloqueado</span>' : r.status === 'aprovada' ? '<span class="etiqueta ok">Confirmada</span>' : r.status === 'proposta' ? '<span class="etiqueta espera">Proposta</span>' : '<span class="etiqueta espera">A aprovar</span>';
-        return '<div class="lt-item reun' + (bq ? ' conflito' : '') + '" data-id="' + i.x.p.id + '" tabindex="0"><time>' + hora(r.inicio) + '</time><div><b>' + esc(i.x.p.empresa) + '</b><small>' + esc(i.x.p.nome) + '</small></div>' + et + '</div>';
+        return '<div class="lt-item reun' + (bq ? ' conflito' : '') + '" data-id="' + i.x.p.id + '" tabindex="0"><time>' + hora(r.inicio) + '</time><div><b>' + esc(tituloReun(i.x)) + '</b><small>' + etiquetaTipo(r) + ' ' + esc(i.x.p.nome) + ' · até ' + hora(i.x.t1) + '</small></div>' + et + '</div>';
       }
       return '<div class="lt-item livre"><time>' + hh(i.h) + '</time><div><span>Livre</span></div>' +
         (estado.semAgenda ? '' : '<button class="btn fantasma mini" type="button" data-bloquear-hora="' + i.h + '">Bloquear</button>') + '</div>';
@@ -330,14 +339,14 @@
     var itens = reunioesAtivas().filter(function (x) { return x.t0 >= agora - 3600e3 && x.t0 <= limite; });
     if (!itens.length) { $('#agenda').innerHTML = '<div class="vazio"><b>Sem reuniões</b>Nenhuma reunião pedida para os próximos 14 dias.</div>'; return; }
     itens.sort(function (a, b) { return a.t0 - b.t0; });
-    var aprovados = {}; itens.forEach(function (x) { if (x.r.status === 'aprovada') aprovados[x.t0] = true; });
+    var aprovadas = itens.filter(function (x) { return x.r.status === 'aprovada'; });
     var html = '', dia = '';
     itens.forEach(function (x) {
       var k = chaveDia(x.r.inicio);
       if (k !== dia) { if (dia) html += '</div>'; dia = k; html += '<div class="agenda-dia"><h3>' + esc(diaExtenso(x.r.inicio)) + '</h3>'; }
-      var conf = x.r.status === 'pendente' && aprovados[x.t0], bq = bloqueiosEntre(x.t0, x.t1).length > 0;
+      var conf = x.r.status === 'pendente' && aprovadas.some(function (y) { return sobrepoe(y.t0, y.t1, x.t0, x.t1); }), bq = bloqueiosEntre(x.t0, x.t1).length > 0;
       var et = conf ? '<span class="etiqueta alerta">Conflito</span>' : bq ? '<span class="etiqueta alerta">Bate com bloqueio</span>' : x.r.status === 'aprovada' ? '<span class="etiqueta ok">Confirmada</span>' : x.r.status === 'proposta' ? '<span class="etiqueta espera">Proposta</span>' : '<span class="etiqueta espera">A aprovar</span>';
-      html += '<div class="agenda-item' + (conf || bq ? ' conflito' : '') + '" data-id="' + x.p.id + '" tabindex="0"><time>' + hora(x.r.inicio) + '</time><div><b>' + esc(x.p.empresa) + '</b><br><small>' + esc(x.p.nome) + '</small></div>' + et + '</div>';
+      html += '<div class="agenda-item' + (conf || bq ? ' conflito' : '') + '" data-id="' + x.p.id + '" tabindex="0"><time>' + hora(x.r.inicio) + '</time><div><b>' + esc(tituloReun(x)) + '</b><br><small>' + etiquetaTipo(x.r) + ' ' + esc(x.p.nome) + '</small></div>' + et + '</div>';
     });
     $('#agenda').innerHTML = html + '</div>';
   }
@@ -436,7 +445,7 @@
   /* ---------- Detalhe ---------- */
   function abrir(id) {
     var p = acharPedido(id); if (!p) return;
-    estado.aberto = id; estado.escolhendo = false; estado.slots = null;
+    estado.aberto = id; estado.escolhendo = false; estado.slots = null; estado.marcando = null;
     $('#detalhe').hidden = false; document.body.style.overflow = 'hidden';
     desenharDetalhe(p);
     $('.folha-caixa', $('#detalhe')).scrollTop = 0;
@@ -575,6 +584,8 @@
     if (st === 'fechado') h += '<section class="bloco"><h4>Cliente fechado 🎉</h4><div class="acoes"><button class="btn secundario pequeno" data-acao="whats-materiais">' + icWhats() + ' Mandar formulário de materiais</button></div></section>';
     if (st === 'recusado' || st === 'perdido') h += '<section class="bloco"><h4>' + (st === 'recusado' ? 'Pedido recusado' : 'Não fechou') + '</h4><div class="acoes"><button class="btn fantasma pequeno" data-acao="reabrir">Reabrir pedido</button></div></section>';
 
+    if (st !== 'recusado') h += blocoReunioes(p);
+
     var resp = p.respostas || {};
 
     // Notas internas
@@ -592,6 +603,64 @@
       ul.innerHTML = (hs || []).map(function (x) { return '<li><time>' + esc(fmt(x.quando, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })) + '</time><span>' + esc(x.evento) + (x.detalhe ? '<br><small class="miudo">' + esc(x.detalhe) + '</small>' : '') + '</span></li>'; }).join('') || '<li><span></span><span class="miudo">Nada ainda.</span></li>';
     });
     if (estado.escolhendo || (!r && st !== 'recusado') || (r && r.status === 'recusada')) carregarSlots(p);
+    if (estado.marcando) conferirMarcar();
+  }
+
+  /* ---------- Reuniões marcadas por ela (acompanhamento, entrega) ---------- */
+  function blocoReunioes(p) {
+    var outras = (p.reunioes || []).filter(function (r) { return tipoDe(r) !== 'prototipo' && r.status === 'aprovada'; })
+      .sort(function (x, y) { return new Date(x.inicio) - new Date(y.inicio); });
+    var agora = Date.now();
+    var lista = outras.map(function (r) {
+      var passou = +new Date(r.fim) < agora;
+      return '<li class="reun-item' + (passou ? ' passou' : '') + '"><div>' + etiquetaTipo(r) + '<b>' + esc(cap(diaHora(r.inicio))) + ' – ' + hora(r.fim) + '</b>' +
+        (r.titulo ? '<small>' + esc(r.titulo) + '</small>' : '') + '</div>' +
+        (passou ? '<span class="miudo">Já foi</span>' : '<div class="acoes"><button class="btn secundario mini" data-acao="whats-reuniao" data-reuniao="' + esc(r.id) + '">' + icWhats() + ' Avisar</button>' +
+        '<button class="btn fantasma mini" data-acao="desmarcar" data-reuniao="' + esc(r.id) + '">Desmarcar</button></div>') + '</li>';
+    }).join('');
+    var corpo = (lista ? '<ul class="reun-lista">' + lista + '</ul>' : '<p class="miudo">Combine com o cliente o melhor dia e marque aqui. O horário só é aceito se estiver livre na agenda.</p>');
+    if (estado.marcando) {
+      var m = estado.marcando, hoje = isoDia(Date.now());
+      corpo += '<div class="marcar" id="marcar-area">' +
+        '<label class="campo"><span>Tipo</span><select id="mr-tipo">' +
+        ['acompanhamento', 'entrega', 'prototipo'].map(function (t) { return '<option value="' + t + '"' + (m.tipo === t ? ' selected' : '') + '>' + TIPOS[t] + '</option>'; }).join('') + '</select></label>' +
+        '<div class="duas"><label class="campo"><span>Duração</span><select id="mr-dur">' + [30, 45, 60, 90, 120].map(function (n) { return '<option value="' + n + '"' + (m.dur === n ? ' selected' : '') + '>' + (n < 60 ? n + ' min' : n === 60 ? '1 hora' : n === 90 ? '1h30' : '2 horas') + '</option>'; }).join('') + '</select></label>' +
+        '<label class="campo"><span>Dia</span><input id="mr-dia" type="date" min="' + hoje + '" value="' + esc(m.dia) + '"></label>' +
+        '<label class="campo"><span>Hora</span><input id="mr-hora" type="time" step="900" value="' + esc(m.hora || '') + '"></label></div>' +
+        '<label class="campo"><span>Assunto (opcional)</span><input id="mr-titulo" maxlength="120" value="' + esc(m.titulo || '') + '" placeholder="Ex.: mostrar a primeira versão"></label>' +
+        '<div id="mr-livres"></div><p class="mr-situacao" id="mr-situacao" aria-live="polite"></p>' +
+        '<div class="acoes"><button class="btn principal pequeno" data-acao="marcar-salvar" id="mr-salvar" disabled>' + icWhats() + ' Marcar e avisar</button>' +
+        '<button class="btn fantasma pequeno" data-acao="marcar-fechar">Cancelar</button></div></div>';
+    } else corpo += '<div class="acoes" style="margin-top:10px"><button class="btn secundario pequeno" data-acao="marcar-abrir">Marcar reunião</button></div>';
+    return '<section class="bloco"><h4>Reuniões com o cliente</h4>' + corpo + '</section>';
+  }
+  function lerMarcar() {
+    var m = estado.marcando; if (!m || !$('#mr-dia')) return null;
+    m.tipo = $('#mr-tipo').value; m.dur = +$('#mr-dur').value; m.titulo = $('#mr-titulo').value; m.dia = $('#mr-dia').value; m.hora = $('#mr-hora').value;
+    return m;
+  }
+  // Mostra as horas livres do dia escolhido e se a hora digitada está livre.
+  function conferirMarcar() {
+    var m = lerMarcar(); if (!m) return;
+    var dur = m.dur * 60e3, f = SEMANA[diaSemana(m.dia)], agora = Date.now(), livres = [];
+    var livre = function (t0) { return t0 > agora && !ocupantes(t0, t0 + dur).length && !bloqueiosEntre(t0, t0 + dur).length; };
+    if (m.dia && f) for (var mi = f[0] * 60; mi + m.dur <= f[1] * 60; mi += 30) {
+      var hm = (mi / 60 < 10 ? '0' : '') + Math.floor(mi / 60) + ':' + (mi % 60 ? '30' : '00');
+      if (livre(+momento(m.dia, hm))) livres.push(hm);
+    }
+    $('#mr-livres').innerHTML = !m.dia ? '' : !f ? '<p class="miudo">Sem atendimento neste dia.</p>' : livres.length ?
+      '<p class="miudo">Livres neste dia:</p><div class="horas">' + livres.map(function (hm) { return '<button type="button" class="hora mr-livre' + (hm === m.hora ? ' ativo' : '') + '" data-hm="' + hm + '">' + hm + '</button>'; }).join('') + '</div>' :
+      '<p class="miudo">Nenhum horário livre neste dia para essa duração.</p>';
+    var sit = $('#mr-situacao'), ok = false;
+    if (m.dia && m.hora) {
+      var t0 = +momento(m.dia, m.hora), oc = ocupantes(t0, t0 + dur)[0], bq = bloqueiosEntre(t0, t0 + dur)[0];
+      if (t0 <= agora) sit.textContent = 'Esse horário já passou.';
+      else if (oc) sit.textContent = 'Bate com ' + tituloReun(oc) + ' (' + TIPOS[tipoDe(oc.r)].toLowerCase() + ', ' + hora(oc.t0) + ' às ' + hora(oc.t1) + ').';
+      else if (bq) sit.textContent = 'Bate com "' + bq.titulo + '" na sua agenda.';
+      else { sit.textContent = 'Livre: ' + cap(diaExtenso(t0)) + ', das ' + hora(t0) + ' às ' + hora(t0 + dur) + '.'; ok = true; }
+      sit.className = 'mr-situacao ' + (ok ? 'ok' : 'erro');
+    } else { sit.textContent = ''; sit.className = 'mr-situacao'; }
+    $('#mr-salvar').disabled = !ok;
   }
 
   function icWhats() { return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2a8.2 8.2 0 0 1-4.2-1.1l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.3-.4.7-1.4.1-.2 0-.3 0-.4l-.8-1.9c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.3.8 3.2.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1-.1-.3-.2-.5-.3z"/></svg>'; }
@@ -601,8 +670,7 @@
   function carregarSlots(p) {
     var pronto = function (slots) {
       estado.slots = slots;
-      var ocupados = {};
-      estado.pedidos.forEach(function (o) { (o.reunioes || []).forEach(function (x) { if (x.status === 'aprovada' || x.status === 'proposta') ocupados[new Date(x.inicio).getTime()] = o.empresa; }); });
+      var ocupadoEm = function (t) { var o = ocupantes(t, t + 3600e3)[0]; return o ? o.p.empresa : ''; };
       var porDia = {}, ordem = [];
       slots.forEach(function (s) { var k = chaveDia(s); if (!porDia[k]) { porDia[k] = []; ordem.push(k); } porDia[k].push(s); });
       var area = $('#propor-area'); if (!area) return;
@@ -612,7 +680,7 @@
         var d = porDia[k][0];
         return '<button type="button" class="dia' + (k === diaSel ? ' ativo' : '') + '" data-dia="' + k + '"><small>' + esc(fmt(d, { weekday: 'short' }).replace('.', '')) + '</small><b>' + fmt(d, { day: '2-digit' }) + '</b></button>';
       }).join('') + '</div><div class="horas">' + porDia[diaSel].map(function (s) {
-        var t = new Date(s).getTime(), oc = ocupados[t];
+        var t = new Date(s).getTime(), oc = ocupadoEm(t);
         return '<button type="button" class="hora" data-slot="' + esc(s) + '"' + (oc ? ' disabled title="Ocupado: ' + esc(oc) + '"' : '') + '>' + hora(s) + '</button>';
       }).join('') + '</div><button class="btn principal largo" data-acao="enviar-proposta" disabled>' + icWhats() + ' Propor e mandar no WhatsApp</button>';
     };
@@ -620,12 +688,15 @@
   }
   $('#det-corpo').addEventListener('click', function (e) {
     var d = e.target.closest('.dia'); if (d) { estado.diaSel = d.dataset.dia; estado.slotSel = null; var p0 = acharPedido(estado.aberto); carregarSlots(p0); return; }
+    var lv = e.target.closest('.mr-livre'); if (lv) { $('#mr-hora').value = lv.dataset.hm; conferirMarcar(); return; }
     var hb = e.target.closest('.hora'); if (hb && !hb.disabled) { estado.slotSel = hb.dataset.slot; $$('.hora').forEach(function (x) { x.classList.toggle('ativo', x === hb); }); $('[data-acao="enviar-proposta"]').disabled = false; return; }
     var b = e.target.closest('[data-acao]'); if (!b || b.disabled) return;
     var p = acharPedido(estado.aberto); if (!p) return;
     acao(b.dataset.acao, p, b);
   });
+  $('#det-corpo').addEventListener('change', function (e) { if (/^mr-/.test(e.target.id)) conferirMarcar(); });
   $('#det-corpo').addEventListener('input', function (e) {
+    if (/^mr-/.test(e.target.id)) conferirMarcar();
     if (e.target.id === 'repo') {
       var v = slug(e.target.value); var a = $('#criar-repo');
       if (a) a.href = 'https://github.com/new?name=' + encodeURIComponent(v) + '&owner=' + encodeURIComponent(CFG.github || '') + '&visibility=public';
@@ -689,6 +760,26 @@
         depois(api.cancelarReunioes(p.id).then(function () { return api.atualizar(p.id, { status: 'recusado' }); }).then(function () { return api.registrar(p.id, 'Pedido recusado'); }), b, 'Pedido recusado').then(function () {
           if (confirm('Mandar uma mensagem educada de recusa no WhatsApp?')) abrirWhats(p.whatsapp, MSG.recusa(p));
         }); break;
+      case 'marcar-abrir':
+        estado.marcando = { tipo: 'acompanhamento', dur: 60, titulo: '', dia: somaDias(isoDia(Date.now()), 3), hora: '' };
+        desenharDetalhe(p); conferirMarcar(); setTimeout(function () { var x = $('#marcar-area'); if (x) x.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 60); break;
+      case 'marcar-fechar': estado.marcando = null; desenharDetalhe(p); break;
+      case 'marcar-salvar':
+        var mm = lerMarcar(); if (!mm || !mm.dia || !mm.hora) return;
+        var ini = momento(mm.dia, mm.hora).toISOString();
+        depois(api.marcarReuniao(p.id, ini, mm.dur, mm.tipo, mm.titulo.trim()), b, 'Reunião marcada').then(function () {
+          estado.marcando = null;
+          var p2 = acharPedido(p.id), r2 = (p2.reunioes || []).filter(function (x) { return x.status === 'aprovada' && +new Date(x.inicio) === +new Date(ini); })[0];
+          if (p2) desenharDetalhe(p2);
+          if (r2) abrirWhats(p2.whatsapp, MSG.reuniao(p2, r2));
+        }); break;
+      case 'whats-reuniao':
+        var rw = (p.reunioes || []).filter(function (x) { return x.id === b.dataset.reuniao; })[0];
+        if (rw) abrirWhats(p.whatsapp, MSG.reuniao(p, rw)); break;
+      case 'desmarcar':
+        var rd = (p.reunioes || []).filter(function (x) { return x.id === b.dataset.reuniao; })[0]; if (!rd) return;
+        if (!confirm('Desmarcar a reunião de ' + diaHora(rd.inicio) + '? O horário fica livre de novo.')) return;
+        depois(api.cancelarReuniao(rd.id).then(function () { return api.registrar(p.id, 'Reunião desmarcada', diaHora(rd.inicio)); }), b, 'Reunião desmarcada'); break;
       case 'salvar-notas':
         var resp = Object.assign({}, p.respostas || {}); resp._anotacoes = $('#notas-internas').value;
         depois(api.atualizar(p.id, { respostas: resp }), b, 'Anotações salvas'); break;
