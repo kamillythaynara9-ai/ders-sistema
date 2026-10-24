@@ -48,17 +48,13 @@
   </header>
 
   <nav class="abas" role="tablist">
-    <button class="aba ativa" data-aba="pedidos" role="tab">Pedidos <span class="contador" id="cont-agir" hidden></span></button>
+    <button class="aba ativa" data-aba="prototipos" role="tab">Protótipos <span class="contador" id="cont-prototipos" hidden></span></button>
+    <button class="aba" data-aba="sites" role="tab">Sites <span class="contador" id="cont-sites" hidden></span></button>
     <button class="aba" data-aba="agenda" role="tab">Agenda</button>
   </nav>
 
   <section class="vista ativa" id="vista-pedidos">
-    <div class="filtros" id="filtros">
-      <button class="chip ativo" data-filtro="agir">Para agir</button>
-      <button class="chip" data-filtro="andamento">Em andamento</button>
-      <button class="chip" data-filtro="encerrados">Encerrados</button>
-      <button class="chip" data-filtro="todos">Todos</button>
-    </div>
+    <div class="filtros" id="filtros"></div>
     <label class="busca"><input id="busca" type="search" placeholder="Buscar empresa, nome ou código" aria-label="Buscar"></label>
     <ul class="lista" id="lista"></ul>
   </section>

@@ -11,13 +11,41 @@
   var STATUS = {
     novo: 'Novo', remarcar: 'Remarcar horário', aguardando_cliente: 'Aguardando cliente', reuniao_ok: 'Reunião confirmada',
     em_criacao: 'Em criação', para_revisar: 'Para revisar', ajuste: 'Ajuste pedido', enviado: 'Enviado',
-    fechado: 'Fechou', perdido: 'Não fechou', recusado: 'Recusado'
+    fechado: 'Vendido', perdido: 'Não fechou', recusado: 'Recusado',
+    site_aguardando: 'Esperando materiais', site_criacao: 'Site em criação', site_revisar: 'Site para revisar',
+    site_ajuste: 'Ajuste no site', site_pronto: 'Site no ar', site_cancelado: 'Cancelado'
   };
-  var GRUPOS = {
-    agir: ['novo', 'remarcar', 'reuniao_ok', 'para_revisar'],
-    andamento: ['aguardando_cliente', 'em_criacao', 'ajuste', 'enviado'],
-    encerrados: ['fechado', 'perdido', 'recusado']
+  // Duas áreas com as mesmas ideias de abas. O pedido é um só: ao vender, ele passa de Protótipos para Sites.
+  var AREAS = {
+    prototipos: {
+      filtros: [['pedidos', 'Pedidos'], ['andamento', 'Em andamento'], ['pronto', 'Pronto'], ['vendido', 'Vendido'], ['cancelado', 'Cancelado'], ['todos', 'Todos']],
+      grupos: { pedidos: ['novo', 'remarcar', 'aguardando_cliente', 'reuniao_ok'], andamento: ['em_criacao', 'ajuste'], pronto: ['para_revisar', 'enviado'], cancelado: ['recusado', 'perdido'] },
+      agir: ['novo', 'remarcar', 'reuniao_ok', 'para_revisar'],
+      vazio: 'Quando chegar um pedido novo pelo formulário, ele aparece aqui.'
+    },
+    sites: {
+      filtros: [['pedidos', 'Pedidos'], ['andamento', 'Em andamento'], ['pronto', 'Pronto'], ['cancelado', 'Cancelado'], ['todos', 'Todos']],
+      grupos: { pedidos: ['site_aguardando'], andamento: ['site_criacao', 'site_revisar', 'site_ajuste'], pronto: ['site_pronto'], cancelado: ['site_cancelado'] },
+      agir: ['site_aguardando', 'site_revisar'],
+      vazio: 'Quando um protótipo for vendido, o site aparece aqui.'
+    }
   };
+  var PRAZO_DIAS = 7;
+  function ehSite(p) { return /^site_/.test(p.status) || p.status === 'fechado'; }
+  function naArea(p, area, filtro) {
+    var A = AREAS[area];
+    if (area === 'sites') { if (!ehSite(p)) return false; return filtro === 'todos' || A.grupos[filtro].indexOf(p.status === 'fechado' ? 'site_aguardando' : p.status) >= 0; }
+    if (filtro === 'vendido') return ehSite(p);
+    if (filtro === 'todos') return true;
+    return A.grupos[filtro].indexOf(p.status) >= 0;
+  }
+  // Dia do prazo: dia 1 é o dia da venda.
+  function prazo(p) {
+    if (!p.vendido_em) return null;
+    var ini = isoDia(p.vendido_em), hoje = isoDia(Date.now()), ate = somaDias(ini, PRAZO_DIAS - 1);
+    var dia = Math.round((Date.parse(hoje) - Date.parse(ini)) / 864e5) + 1;
+    return { dia: dia, ate: ate, atrasado: dia > PRAZO_DIAS, apertado: dia >= PRAZO_DIAS - 1 };
+  }
   var ROTULOS = {
     origem: 'Como conheceu', segmento: 'Ramo', cidade: 'Cidade', uf: 'UF', tempo: 'Tempo de empresa', equipe: 'Equipe',
     atendimento: 'Como atende', instagram: 'Instagram', siteAtual: 'Site atual', google: 'Google Maps', tipoSite: 'Tipo de site',
@@ -61,7 +89,7 @@
       return t;
     },
     reuniao: function (p, r) { return 'Oi, ' + primeiroNome(p.nome) + '! Marquei nossa reunião ' + (r.tipo === 'entrega' ? 'de entrega do site' : 'sobre o site') + ' da ' + p.empresa + ' para ' + diaExtenso(r.inicio) + ', às ' + hora(r.inicio) + '. Até lá!'; },
-    materiais: function (p) { return 'Que bom ter você com a gente, ' + primeiroNome(p.nome) + '! Para montar o site final da ' + p.empresa + ', preciso dos seus materiais (fotos, textos, contatos). É só preencher aqui, leva poucos minutos: ' + CFG.formsUrl + '/materiais/'; }
+    materiais: function (p) { return 'Que bom ter você com a gente, ' + primeiroNome(p.nome) + '! Para montar o site final da ' + p.empresa + ', preciso dos seus materiais (fotos, textos, contatos). É só preencher aqui, leva poucos minutos: ' + CFG.formsUrl + '/materiais/?pedido=' + encodeURIComponent(p.codigo); }
   };
 
   /* ---------- Camada de dados ---------- */
@@ -111,7 +139,7 @@
   function tituloReun(x) { return x.r.titulo ? x.p.empresa + ' · ' + x.r.titulo : x.p.empresa; }
 
   /* ---------- Estado ---------- */
-  var estado = { pedidos: [], bloqueios: [], filtro: 'agir', busca: '', aberto: null, slots: null };
+  var estado = { pedidos: [], bloqueios: [], area: 'prototipos', filtro: 'pedidos', busca: '', aberto: null, slots: null };
 
   function reuniaoAtual(p) {
     var rs = (p.reunioes || []).filter(function (r) { return r.status !== 'cancelada' && tipoDe(r) === 'prototipo'; });
@@ -169,7 +197,7 @@
     return Promise.all([api.pedidos(), bl]).then(function (res) {
       var ps = res[0]; estado.bloqueios = res[1];
       estado.pedidos = ps || [];
-      desenharLista(); desenharAgenda();
+      desenharFiltros(); desenharLista(); desenharAgenda();
       if (estado.aberto) { var p = acharPedido(estado.aberto); if (p) desenharDetalhe(p); }
     }).catch(function (e) { avisar(erroAmigavel(e)); });
   }
@@ -178,7 +206,9 @@
   $$('.aba').forEach(function (b) {
     b.addEventListener('click', function () {
       $$('.aba').forEach(function (x) { x.classList.toggle('ativa', x === b); });
-      $$('.vista').forEach(function (v) { v.classList.toggle('ativa', v.id === 'vista-' + b.dataset.aba); });
+      var area = AREAS[b.dataset.aba] ? b.dataset.aba : null;
+      $$('.vista').forEach(function (v) { v.classList.toggle('ativa', v.id === 'vista-' + (area ? 'pedidos' : b.dataset.aba)); });
+      if (area && area !== estado.area) { estado.area = area; estado.filtro = 'pedidos'; desenharFiltros(); desenharLista(); }
     });
   });
   $('#filtros').addEventListener('click', function (e) {
@@ -189,35 +219,57 @@
   });
   $('#busca').addEventListener('input', function () { estado.busca = this.value.trim().toLowerCase(); desenharLista(); });
 
+  function desenharFiltros() {
+    $('#filtros').innerHTML = AREAS[estado.area].filtros.map(function (f) {
+      return '<button class="chip' + (f[0] === estado.filtro ? ' ativo' : '') + '" data-filtro="' + f[0] + '">' + f[1] + '</button>';
+    }).join('');
+  }
   function desenharLista() {
-    var agir = estado.pedidos.filter(function (p) { return GRUPOS.agir.indexOf(p.status) >= 0; }).length;
-    var cont = $('#cont-agir'); cont.hidden = !agir; cont.textContent = agir;
+    ['prototipos', 'sites'].forEach(function (ar) {
+      var n = estado.pedidos.filter(function (p) { return AREAS[ar].agir.indexOf(p.status) >= 0; }).length;
+      var c = $('#cont-' + ar); c.hidden = !n; c.textContent = n;
+    });
     var lista = estado.pedidos.filter(function (p) {
-      if (estado.filtro !== 'todos' && GRUPOS[estado.filtro].indexOf(p.status) < 0) return false;
+      if (!naArea(p, estado.area, estado.filtro)) return false;
       if (!estado.busca) return true;
       return [p.empresa, p.nome, p.codigo, p.whatsapp].join(' ').toLowerCase().indexOf(estado.busca) >= 0;
     });
+    if (estado.area === 'sites') lista.sort(function (x, y) { return new Date(x.vendido_em || x.criado_em) - new Date(y.vendido_em || y.criado_em); });
     if (!lista.length) {
-      $('#lista').innerHTML = '<li class="vazio"><b>' + (estado.filtro === 'agir' ? 'Tudo em dia' : 'Nada por aqui') + '</b>' +
-        (estado.filtro === 'agir' ? 'Quando chegar um pedido novo pelo formulário, ele aparece aqui.' : 'Nenhum pedido nesta lista.') + '</li>';
+      $('#lista').innerHTML = '<li class="vazio"><b>' + (estado.filtro === 'pedidos' ? 'Tudo em dia' : 'Nada por aqui') + '</b>' +
+        (estado.filtro === 'pedidos' ? AREAS[estado.area].vazio : 'Nenhum pedido nesta lista.') + '</li>';
       return;
     }
     $('#lista').innerHTML = lista.map(function (p, i) {
-      var r = reuniaoAtual(p), conf = conflitoDe(p, r), tags = '';
-      if (r) {
-        var cls = r.status === 'aprovada' ? 'ok' : conf ? 'alerta' : r.status === 'recusada' ? 'alerta' : 'espera';
-        var pre = r.status === 'aprovada' ? 'Reunião ' : r.status === 'proposta' ? 'Proposto ' : r.status === 'recusada' ? 'Cliente pediu outro horário · ' : 'Pediu ';
-        tags += '<span class="etiqueta ' + cls + '">' + pre + esc(diaHora(r.inicio)) + '</span>';
-        if (conf) tags += '<span class="etiqueta alerta">Conflito</span>';
-        else if (r.status !== 'recusada' && bloqueioDa(r)) tags += '<span class="etiqueta alerta">Na sua indisponibilidade</span>';
+      var tags = '', site = ehSite(p);
+      if (site) {
+        var pz = prazo(p), prox = proximaReuniao(p);
+        if (pz && ['site_pronto', 'site_cancelado'].indexOf(p.status) < 0) tags += '<span class="etiqueta ' + (pz.atrasado ? 'alerta' : pz.apertado ? 'espera' : 'ok') + '">' + (pz.atrasado ? 'Passou do prazo' : 'Dia ' + pz.dia + ' de ' + PRAZO_DIAS) + '</span>';
+        if (prox) tags += '<span class="etiqueta">' + esc(TIPOS[tipoDe(prox)]) + ' ' + esc(diaHora(prox.inicio)) + '</span>';
+      } else {
+        var r = reuniaoAtual(p), conf = conflitoDe(p, r);
+        if (r) {
+          var cls = r.status === 'aprovada' ? 'ok' : conf ? 'alerta' : r.status === 'recusada' ? 'alerta' : 'espera';
+          var pre = r.status === 'aprovada' ? 'Reunião ' : r.status === 'proposta' ? 'Proposto ' : r.status === 'recusada' ? 'Cliente pediu outro horário · ' : 'Pediu ';
+          tags += '<span class="etiqueta ' + cls + '">' + pre + esc(diaHora(r.inicio)) + '</span>';
+          if (conf) tags += '<span class="etiqueta alerta">Conflito</span>';
+          else if (r.status !== 'recusada' && bloqueioDa(r)) tags += '<span class="etiqueta alerta">Na sua indisponibilidade</span>';
+        }
       }
       if (p.tipo_site) tags += '<span class="etiqueta">' + esc(p.tipo_site) + '</span>';
+      var rotulo = estado.area === 'prototipos' && site ? 'Vendido · ' + (STATUS[p.status] || p.status) : (STATUS[p.status] || p.status);
       return '<li class="item st-' + p.status + '" data-id="' + p.id + '" style="animation-delay:' + Math.min(i * 40, 400) + 'ms" tabindex="0">' +
         '<div class="item-linha"><div><h3>' + esc(p.empresa) + '</h3><p>' + esc(p.nome) + ' · ' + esc(p.segmento || 'Ramo não informado') + '</p></div>' +
-        '<span class="status">' + esc(STATUS[p.status] || p.status) + '</span></div>' +
+        '<span class="status">' + esc(rotulo) + '</span></div>' +
         '<div class="quando">' + tags + '</div></li>';
     }).join('');
   }
+  function proximaReuniao(p) {
+    var agora = Date.now();
+    return (p.reunioes || []).filter(function (r) { return r.status === 'aprovada' && +new Date(r.fim) > agora; })
+      .sort(function (x, y) { return new Date(x.inicio) - new Date(y.inicio); })[0] || null;
+  }
+
   $('#lista').addEventListener('click', function (e) { var li = e.target.closest('.item'); if (li) abrir(li.dataset.id); });
   $('#lista').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var li = e.target.closest('.item'); if (li) abrir(li.dataset.id); } });
 
@@ -518,6 +570,8 @@
     // O que o cliente quer (respostas + logo), logo no começo para decidir se aceita
     h += blocoPedido(p, logo);
 
+    if (ehSite(p)) h += blocoSite(p);
+    else {
     // 1. Reunião
     var c1 = '', feito1 = r && r.status === 'aprovada';
     if (!r) {
@@ -578,13 +632,14 @@
 
     // 4. Resultado
     if (st === 'enviado') {
-      h += passo(4, 'Depois da reunião', '<p>Fechou o site? Se sim, eu já preparo a mensagem com o formulário de materiais.</p>' +
-        '<div class="acoes"><button class="btn verde pequeno" data-acao="fechou">Fechou!</button><button class="btn fantasma pequeno" data-acao="perdeu">Não fechou</button></div>', 'atual');
+      h += passo(4, 'Depois da reunião', '<p>Fechou o site? Marque como vendido: o pedido passa para Sites, o prazo de ' + PRAZO_DIAS + ' dias começa e eu preparo a mensagem com o formulário de materiais.</p>' +
+        '<div class="acoes"><button class="btn verde pequeno" data-acao="fechou">Vendido!</button><button class="btn fantasma pequeno" data-acao="perdeu">Não fechou</button></div>', 'atual');
     }
-    if (st === 'fechado') h += '<section class="bloco"><h4>Cliente fechado 🎉</h4><div class="acoes"><button class="btn secundario pequeno" data-acao="whats-materiais">' + icWhats() + ' Mandar formulário de materiais</button></div></section>';
     if (st === 'recusado' || st === 'perdido') h += '<section class="bloco"><h4>' + (st === 'recusado' ? 'Pedido recusado' : 'Não fechou') + '</h4><div class="acoes"><button class="btn fantasma pequeno" data-acao="reabrir">Reabrir pedido</button></div></section>';
 
-    if (st !== 'recusado') h += blocoReunioes(p);
+    }
+
+    if (['recusado', 'perdido', 'site_cancelado'].indexOf(st) < 0) h += blocoReunioes(p);
 
     var resp = p.respostas || {};
 
@@ -595,7 +650,8 @@
     // Histórico
     h += '<section class="bloco"><h4>Histórico</h4><ul class="historico" id="historico"><li><span></span><span class="miudo">Carregando...</span></li></ul></section>';
 
-    if (['recusado', 'perdido', 'fechado'].indexOf(st) < 0) h += '<button class="btn perigo largo" data-acao="recusar">Recusar pedido</button>';
+    if (ehSite(p)) { if (st !== 'site_cancelado' && st !== 'site_pronto') h += '<button class="btn perigo largo" data-acao="cancelar-site">Cancelar a venda</button>'; }
+    else if (['recusado', 'perdido'].indexOf(st) < 0) h += '<button class="btn perigo largo" data-acao="recusar">Recusar pedido</button>';
 
     $('#det-corpo').innerHTML = h;
     api.historico(p.id).then(function (hs) {
@@ -604,6 +660,43 @@
     });
     if (estado.escolhendo || (!r && st !== 'recusado') || (r && r.status === 'recusada')) carregarSlots(p);
     if (estado.marcando) conferirMarcar();
+  }
+
+  /* ---------- Site vendido ---------- */
+  function blocoSite(p) {
+    var st = p.status === 'fechado' ? 'site_aguardando' : p.status, pz = prazo(p), h = '';
+    if (pz && st !== 'site_cancelado') {
+      var pct = Math.min(100, Math.round(pz.dia / PRAZO_DIAS * 100));
+      h += '<section class="bloco prazo' + (st === 'site_pronto' ? ' ok' : pz.atrasado ? ' atrasado' : pz.apertado ? ' apertado' : '') + '"><div class="prazo-linha"><b>' +
+        (st === 'site_pronto' ? 'Site entregue' : pz.atrasado ? 'Passou do prazo' : 'Dia ' + pz.dia + ' de ' + PRAZO_DIAS) + '</b><span>Vendido ' + esc(fmt(p.vendido_em, { day: '2-digit', month: '2-digit' })) +
+        ' · entrega até ' + esc(cap(diaExtenso(momento(pz.ate, '12:00')))) + '</span></div>' +
+        (st === 'site_pronto' ? '' : '<div class="prazo-barra"><i style="width:' + pct + '%"></i></div>') + '</section>';
+    }
+    // 1. Materiais
+    var feito1 = st !== 'site_aguardando';
+    var c1 = feito1 ? '<p>Materiais recebidos.</p>' :
+      '<p>Mande o formulário de materiais. Quanto mais o cliente mandar (textos, fotos, vídeos, produtos), mais rápido e certo o site sai.</p>' +
+      '<div class="acoes"><button class="btn secundario pequeno" data-acao="whats-materiais">' + icWhats() + ' Mandar formulário de materiais</button></div>' +
+      '<p class="miudo" style="margin-top:10px">Chegou tudo? Aí eu começo o site final no repositório <b>' + esc(p.repositorio || '') + '</b>, em cima do protótipo.</p>' +
+      '<div class="acoes"><button class="btn principal pequeno" data-acao="site-comecar">Materiais ok: criar o site</button></div>';
+    if (st !== 'site_cancelado') h += passo(feito1 ? '✓' : 1, 'Materiais do cliente', c1, feito1 ? 'feito' : 'atual');
+    // 2. Criação e revisão
+    if (['site_criacao', 'site_revisar', 'site_ajuste', 'site_pronto'].indexOf(st) >= 0) {
+      var link = linkSeguro(p.link_site), c2 = '';
+      if (st === 'site_criacao') c2 += '<p>Estou montando o site final no mesmo código do protótipo. Quando terminar, ele aparece aqui para você revisar.</p>' +
+        '<div class="acoes"><button class="btn fantasma pequeno" data-acao="site-parar">Parar a criação</button></div>';
+      if (st === 'site_ajuste') c2 += '<div class="info-caixa">Ajuste pedido: ' + esc(p.ajuste || '') + '<br>Estou fazendo. Volta para cá quando estiver pronto.</div>';
+      if (link) c2 += '<div class="acoes"><a class="btn secundario pequeno" href="' + esc(link) + '" target="_blank" rel="noopener">Abrir o site</a></div>';
+      if (p.notas && st !== 'site_criacao') c2 += '<p class="miudo">Notas: ' + esc(p.notas) + '</p>';
+      if (st === 'site_revisar' || st === 'site_pronto') {
+        c2 += '<label class="campo" style="margin-top:12px"><span>Quer mudar algo?</span><textarea id="ajuste" placeholder="Ex.: trocar a foto do topo, corrigir o horário"></textarea></label>' +
+          '<div class="acoes">' + (st === 'site_revisar' ? '<button class="btn verde pequeno" data-acao="site-pronto">Aprovar: site no ar</button>' : '') +
+          '<button class="btn fantasma pequeno" data-acao="site-ajuste">Pedir ajuste</button></div>';
+      }
+      h += passo(st === 'site_pronto' ? '✓' : 2, 'Site final', c2, st === 'site_pronto' ? 'feito' : 'atual');
+    }
+    if (st === 'site_cancelado') h += '<section class="bloco"><h4>Venda cancelada</h4><p class="miudo">Fica guardado para o portfólio.</p><div class="acoes"><button class="btn fantasma pequeno" data-acao="site-reabrir">Reabrir</button></div></section>';
+    return h;
   }
 
   /* ---------- Reuniões marcadas por ela (acompanhamento, entrega) ---------- */
@@ -750,9 +843,30 @@
         abrirWhats(p.whatsapp, MSG.envio(p, r));
         depois(api.atualizar(p.id, { status: 'enviado' }).then(function () { return api.registrar(p.id, 'Protótipo e vídeo enviados ao cliente'); }), b, 'Marcado como enviado'); break;
       case 'fechou':
-        depois(api.atualizar(p.id, { status: 'fechado' }).then(function () { return api.registrar(p.id, 'Cliente fechou o site'); }), b, 'Parabéns! 🎉').then(function () {
+        depois(api.atualizar(p.id, { status: 'site_aguardando', vendido_em: new Date().toISOString() }).then(function () { return api.registrar(p.id, 'Vendido: passou para Sites', 'Prazo de ' + PRAZO_DIAS + ' dias'); }), b, 'Vendido! 🎉 Agora está em Sites').then(function () {
           if (confirm('Mandar agora o formulário de materiais no WhatsApp?')) { abrirWhats(p.whatsapp, MSG.materiais(p)); api.registrar(p.id, 'Formulário de materiais enviado'); }
+          var p2 = acharPedido(p.id); if (!p2) return;
+          // sugere já a reunião de entrega no último dia do prazo
+          estado.marcando = { tipo: 'entrega', dur: 60, titulo: 'Entrega do site', dia: somaDias(isoDia(Date.now()), PRAZO_DIAS - 1), hora: '' };
+          desenharDetalhe(p2); setTimeout(function () { var x = $('#marcar-area'); if (x) x.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 80);
         }); break;
+      case 'site-comecar':
+        if (!p.repositorio && !confirm('Este pedido não tem repositório anotado. Continuar mesmo assim?')) return;
+        depois(api.atualizar(p.id, { status: 'site_criacao' }).then(function () { return api.registrar(p.id, 'Materiais ok: site final em criação'); }), b, 'Já vou montar o site'); break;
+      case 'site-parar':
+        if (!confirm('Parar a criação do site final?')) return;
+        depois(api.atualizar(p.id, { status: 'site_aguardando' }).then(function () { return api.registrar(p.id, 'Criação do site final parada'); }), b, 'Criação parada'); break;
+      case 'site-pronto':
+        depois(api.atualizar(p.id, { status: 'site_pronto' }).then(function () { return api.registrar(p.id, 'Site final aprovado e no ar'); }), b, 'Site no ar! 🎉'); break;
+      case 'site-ajuste':
+        var aj2 = ($('#ajuste').value || '').trim();
+        if (!aj2) { avisar('Escreva o que quer mudar.'); $('#ajuste').focus(); return; }
+        depois(api.atualizar(p.id, { status: 'site_ajuste', ajuste: aj2 }).then(function () { return api.registrar(p.id, 'Ajuste pedido no site final', aj2); }), b, 'Ajuste enviado para mim'); break;
+      case 'cancelar-site':
+        if (!confirm('Cancelar a venda do site da ' + p.empresa + '? Ele fica guardado em Cancelado.')) return;
+        depois(api.atualizar(p.id, { status: 'site_cancelado' }).then(function () { return api.registrar(p.id, 'Venda cancelada'); }), b, 'Venda cancelada'); break;
+      case 'site-reabrir':
+        depois(api.atualizar(p.id, { status: 'site_aguardando' }).then(function () { return api.registrar(p.id, 'Site reaberto'); }), b, 'Site reaberto'); break;
       case 'perdeu': depois(api.atualizar(p.id, { status: 'perdido' }).then(function () { return api.registrar(p.id, 'Não fechou'); }), b, 'Anotado'); break;
       case 'reabrir': depois(api.atualizar(p.id, { status: 'novo' }).then(function () { return api.registrar(p.id, 'Pedido reaberto'); }), b, 'Pedido reaberto'); break;
       case 'recusar':

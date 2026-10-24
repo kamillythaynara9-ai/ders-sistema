@@ -298,3 +298,14 @@ code { background: var(--violeta-claro); padding: 1px 6px; border-radius: 6px; f
 .mr-situacao { font-weight: 700; margin: 6px 0 12px; min-height: 1.2em; }
 .mr-situacao.ok { color: #23705A; }
 .mr-situacao.erro { color: #C2413B; }
+
+/* Site vendido: prazo de 7 dias */
+.prazo .prazo-linha { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px; }
+.prazo .prazo-linha b { font-size: 1.15rem; }
+.prazo .prazo-linha span { color: var(--suave); font-size: .88rem; }
+.prazo-barra { height: 10px; border-radius: 999px; background: var(--linha); margin-top: 10px; overflow: hidden; }
+.prazo-barra i { display: block; height: 100%; border-radius: inherit; background: #2FA27A; transition: width .4s; }
+.prazo.apertado .prazo-barra i { background: #E09A2C; }
+.prazo.atrasado .prazo-barra i { background: #C2413B; }
+.prazo.atrasado .prazo-linha b { color: #C2413B; }
+.prazo.ok .prazo-linha b { color: #23705A; }

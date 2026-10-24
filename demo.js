@@ -34,9 +34,12 @@
     pedido({ empresa: 'Festa Mágica Brinquedos', nome: 'Juliana Rocha', whatsapp: '11900000005', segmento: 'Festas e eventos', tipo_site: 'Site com Catálogo', status: 'enviado', horas: 50, repositorio: 'festa-magica',
       link_prototipo: 'https://sonhar-e-brincar.vercel.app/', respostas: { origem: 'Instagram', cidade: 'São Paulo', oQueVende: 'Aluguel de brinquedos para festas' },
       reunioes: [reuniao(slotEm(0, 20), 'aprovada')] }),
-    pedido({ empresa: 'Ateliê Flor de Lis', nome: 'Paula Nunes', whatsapp: '11900000006', segmento: 'Moda', tipo_site: 'Site para Empresa', status: 'fechado', horas: 80, repositorio: 'flor-de-lis',
+    pedido({ empresa: 'Ateliê Flor de Lis', nome: 'Paula Nunes', whatsapp: '11900000006', segmento: 'Moda', tipo_site: 'Site para Empresa', status: 'site_aguardando', vendido_em: new Date(agora - 2 * 864e5).toISOString(), horas: 80, repositorio: 'flor-de-lis',
       link_prototipo: 'https://sonhar-e-brincar.vercel.app/', respostas: { origem: 'Indicação', cidade: 'São Paulo', oQueVende: 'Vestidos sob medida' },
-      reunioes: [reuniao(slotEm(-3, 16), 'aprovada'), Object.assign(reuniao(slotEm(2, 14), 'aprovada', 'ders'), { tipo: 'acompanhamento', titulo: 'Mostrar a primeira versão' })] })
+      reunioes: [reuniao(slotEm(-3, 16), 'aprovada'), Object.assign(reuniao(slotEm(2, 14), 'aprovada', 'ders'), { tipo: 'acompanhamento', titulo: 'Mostrar a primeira versão' })] }),
+    pedido({ empresa: 'Sabor da Vila Restaurante', nome: 'Bruno Costa', whatsapp: '11900000007', segmento: 'Alimentação', tipo_site: 'Mini Site', status: 'site_revisar', vendido_em: new Date(agora - 5 * 864e5).toISOString(), horas: 150, repositorio: 'sabor-da-vila',
+      link_prototipo: 'https://detalhe-perfeito.vercel.app/', link_site: 'https://detalhe-perfeito.vercel.app/', notas: 'Cardápio e fotos do cliente já no site.', respostas: { origem: 'Instagram', cidade: 'Campinas', oQueVende: 'Almoço caseiro e marmitas' },
+      reunioes: [reuniao(slotEm(-6, 11), 'aprovada'), Object.assign(reuniao(slotEm(1, 16), 'aprovada', 'ders'), { tipo: 'entrega', titulo: 'Entrega do site' })] })
   ];
   // Agenda de exemplo: uma aula toda semana e uma tarde livre bloqueada.
   var serieAula = 'demo-serie-aula';
@@ -62,7 +65,8 @@
     ehAdmin: function () { return resolve(logado); },
     pedidos: function () { return resolve(dados); },
     historico: function (pid) { return resolve((hist[pid] || []).slice().reverse()); },
-    atualizar: function (pid, campos) { Object.assign(acha(pid), campos); if (campos.status === 'em_criacao') setTimeout(function () { var p = acha(pid); if (p.status === 'em_criacao') { p.status = 'para_revisar'; p.link_prototipo = 'https://detalhe-perfeito.vercel.app/'; reg(pid, 'Site e vídeo prontos para revisar'); } }, 6000); return resolve(true); },
+    atualizar: function (pid, campos) { Object.assign(acha(pid), campos); this._site(pid); if (campos.status === 'em_criacao') setTimeout(function () { var p = acha(pid); if (p.status === 'em_criacao') { p.status = 'para_revisar'; p.link_prototipo = 'https://detalhe-perfeito.vercel.app/'; reg(pid, 'Site e vídeo prontos para revisar'); } }, 6000); return resolve(true); },
+    _site: function (pid) { var p = acha(pid); if (p.status === 'site_criacao' || p.status === 'site_ajuste') setTimeout(function () { if (/site_(criacao|ajuste)/.test(p.status)) { p.status = 'site_revisar'; p.link_site = p.link_prototipo || 'https://detalhe-perfeito.vercel.app/'; reg(pid, 'Site final pronto para revisar'); } }, 4000); },
     registrar: function (pid, e, d) { reg(pid, e, d); return resolve(true); },
     cancelarReunioes: function (pid) { acha(pid).reunioes.forEach(function (r) { if (r.status === 'pendente' || r.status === 'proposta') r.status = 'cancelada'; }); return resolve(true); },
     aprovarReuniao: function (rid) {

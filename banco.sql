@@ -43,7 +43,14 @@ create table if not exists public.pedidos (
     'enviado',         -- cliente recebeu protótipo + vídeo
     'fechado',         -- virou cliente
     'perdido',         -- não fechou
-    'recusado'         -- pedido recusado
+    'recusado',        -- pedido recusado
+    -- Site vendido (mesmo pedido, passa para a área Sites):
+    'site_aguardando', -- vendido, esperando os materiais do cliente
+    'site_criacao',    -- materiais ok: Claude monta o site final no mesmo repositório
+    'site_revisar',    -- site final pronto para a Thaynara revisar
+    'site_ajuste',     -- ela pediu ajuste no site final
+    'site_pronto',     -- site no ar
+    'site_cancelado'   -- venda cancelada (fica para o portfólio)
   )),
   nome text not null,
   whatsapp text not null,
@@ -59,7 +66,9 @@ create table if not exists public.pedidos (
   link_prototipo text,
   link_video text,
   ajuste text,
-  notas text
+  notas text,
+  vendido_em timestamptz,  -- o prazo de 7 dias conta daqui
+  link_site text
 );
 
 create table if not exists public.reunioes (
@@ -356,7 +365,7 @@ returns setof public.pedidos
 language plpgsql stable security definer set search_path = public, extensions as $$
 begin
   if not public.robo_ok(p_chave) then raise exception 'sem_permissao'; end if;
-  return query select * from public.pedidos where status in ('em_criacao','ajuste') order by atualizado_em;
+  return query select * from public.pedidos where status in ('em_criacao','ajuste','site_criacao','site_ajuste') order by atualizado_em;
 end $$;
 
 create or replace function public.robo_entregar(p_chave text, p_pedido uuid, p_prototipo text, p_video text, p_notas text)
@@ -364,6 +373,13 @@ returns void
 language plpgsql volatile security definer set search_path = public, extensions as $$
 begin
   if not public.robo_ok(p_chave) then raise exception 'sem_permissao'; end if;
+  -- Site final (área Sites): o link vai para link_site.
+  update public.pedidos set status = 'site_revisar', link_site = p_prototipo, notas = coalesce(p_notas, notas), ajuste = null
+  where id = p_pedido and status in ('site_criacao','site_ajuste');
+  if found then
+    insert into public.historico (pedido_id, evento, detalhe) values (p_pedido, 'Site final pronto para revisar', p_notas);
+    return;
+  end if;
   update public.pedidos set status = 'para_revisar', link_prototipo = p_prototipo, link_video = p_video,
          notas = coalesce(p_notas, notas), ajuste = null
   where id = p_pedido and status in ('em_criacao','ajuste');
@@ -410,11 +426,11 @@ create or replace function public.avisar_claude() returns trigger
 language plpgsql security definer set search_path = public, extensions as $$
 declare cfg jsonb := (select valor from public.config where chave = 'aviso_github');
 begin
-  if cfg is null or new.status is not distinct from old.status or new.status not in ('em_criacao', 'ajuste') then return new; end if;
+  if cfg is null or new.status is not distinct from old.status or new.status not in ('em_criacao', 'ajuste', 'site_criacao', 'site_ajuste') then return new; end if;
   perform net.http_post(
     url := 'https://api.github.com/repos/' || (cfg ->> 'repo') || '/issues/' || (cfg ->> 'pr') || '/comments',
     body := jsonb_build_object('body', 'Pedido ' || new.codigo ||
-      case when new.status = 'ajuste' then ' recebeu ajuste.' else ' aprovado para criação.' end || ' (aviso automático do Sistema DERS)'),
+      case new.status when 'ajuste' then ' recebeu ajuste.' when 'site_criacao' then ' vendido: criar o site final.' when 'site_ajuste' then ' recebeu ajuste no site final.' else ' aprovado para criação.' end || ' (aviso automático do Sistema DERS)'),
     headers := jsonb_build_object('Authorization', 'Bearer ' || (cfg ->> 'token'), 'Accept', 'application/vnd.github+json',
       'User-Agent', 'ders-sistema', 'Content-Type', 'application/json'));
   return new;
